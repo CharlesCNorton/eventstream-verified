@@ -3,6 +3,12 @@ open Eventstream
 let mkEvent id ts seq pl kd =
   { ev_id = id; ev_timestamp = ts; ev_seq = seq; ev_payload = pl; ev_kind = kd }
 
+let pcmp = Nat.compare
+let srep old_ new_ = (<=) old_.ev_seq new_.ev_seq
+let canonicalize s = canonicalize pcmp srep s
+let fold_stream s = fold_stream pcmp srep s
+let detect_gaps s = detect_gaps pcmp srep s
+
 let random_kind () =
   match Random.int 10 with
   | 0 -> Cancel        (* 10% cancel *)
@@ -30,6 +36,8 @@ let shuffle lst =
     arr.(j) <- tmp
   done;
   Array.to_list arr
+
+let event_leb a b = event_leb pcmp a b
 
 let is_sorted lst =
   let rec check = function

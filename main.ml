@@ -3,6 +3,12 @@ open Eventstream
 let mkEvent id ts seq pl kd =
   { ev_id = id; ev_timestamp = ts; ev_seq = seq; ev_payload = pl; ev_kind = kd }
 
+let pcmp = Nat.compare
+let srep old_ new_ = (<=) old_.ev_seq new_.ev_seq
+let canonicalize s = canonicalize pcmp srep s
+let fold_stream s = fold_stream pcmp srep s
+let detect_gaps s = detect_gaps pcmp srep s
+
 let string_of_kind = function
   | Original -> "Original"
   | Correction -> "Correction"

@@ -166,6 +166,40 @@ Module IdMap := FMapAVL.Make(Nat_as_OT).
 
 Section Parameterized.
 
+Variable Key : Type.
+Variable key_compare : Key -> Key -> comparison.
+Variable key_eqb : Key -> Key -> bool.
+
+Hypothesis key_compare_refl
+  : forall k, key_compare k k = Eq.
+Hypothesis key_compare_antisym
+  : forall k1 k2, key_compare k1 k2 = CompOpp (key_compare k2 k1).
+Hypothesis key_compare_eq
+  : forall k1 k2, key_compare k1 k2 = Eq -> k1 = k2.
+Hypothesis key_compare_not_gt_trans
+  : forall k1 k2 k3,
+    key_compare k1 k2 <> Gt ->
+    key_compare k2 k3 <> Gt ->
+    key_compare k1 k3 <> Gt.
+Hypothesis key_eqb_spec
+  : forall k1 k2, reflect (k1 = k2) (key_eqb k1 k2).
+
+Lemma key_eqb_eq
+  : forall k1 k2, key_eqb k1 k2 = true -> k1 = k2.
+Proof.
+  intros k1 k2 H. destruct (key_eqb_spec k1 k2) as [Heq | Hneq].
+  - exact Heq.
+  - discriminate.
+Defined.
+
+Lemma key_eqb_neq
+  : forall k1 k2, key_eqb k1 k2 = false -> k1 <> k2.
+Proof.
+  intros k1 k2 H. destruct (key_eqb_spec k1 k2) as [Heq | Hneq].
+  - discriminate.
+  - exact Hneq.
+Defined.
+
 Variable Payload : Type.
 Variable payload_compare : Payload -> Payload -> comparison.
 Variable payload_eqb : Payload -> Payload -> bool.
@@ -185,9 +219,9 @@ Hypothesis payload_eqb_spec
   : forall p1 p2, reflect (p1 = p2) (payload_eqb p1 p2).
 
 Record event : Type := mkEvent {
-  ev_id : nat;
-  ev_timestamp : nat;
-  ev_seq : nat;
+  ev_id : Key;
+  ev_timestamp : Key;
+  ev_seq : Key;
   ev_payload : Payload;
   ev_kind : event_kind
 }.
@@ -215,6 +249,28 @@ Hypothesis cancel_handler_NoDup
 Hypothesis cancel_handler_ids_incl
   : forall e acc, incl (map ev_id (cancel_handler e acc)) (map ev_id acc).
 
+(** * Abstract map keyed by Key, used for the map-based accumulator.
+    Concrete implementations (e.g. AVL via FMapAVL) are supplied
+    at instantiation time. *)
+
+Variable KMap : Type.
+Variable kmap_find : Key -> KMap -> option event.
+Variable kmap_add : Key -> event -> KMap -> KMap.
+Variable kmap_remove : Key -> KMap -> KMap.
+Variable kmap_In : Key -> KMap -> Prop.
+Variable kmap_elements : KMap -> list (Key * event).
+
+Hypothesis kmap_find_In
+  : forall k m v, kmap_find k m = Some v -> kmap_In k m.
+Hypothesis kmap_add_In_same
+  : forall k v m, kmap_In k (kmap_add k v m).
+Hypothesis kmap_add_In_other
+  : forall k k' v m, k <> k' -> (kmap_In k' (kmap_add k v m) <-> kmap_In k' m).
+Hypothesis kmap_remove_not_In
+  : forall k m, ~ kmap_In k (kmap_remove k m).
+Hypothesis kmap_remove_In_other
+  : forall k k' m, k' <> k -> (kmap_In k' (kmap_remove k m) <-> kmap_In k' m).
+
 (** * Decidable equality. *)
 
 Definition event_kind_eqb (k1 k2 : event_kind) : bool :=
@@ -232,9 +288,9 @@ Proof.
 Defined.
 
 Definition event_eqb (e1 e2 : event) : bool :=
-  Nat.eqb (ev_id e1) (ev_id e2) &&
-  Nat.eqb (ev_timestamp e1) (ev_timestamp e2) &&
-  Nat.eqb (ev_seq e1) (ev_seq e2) &&
+  key_eqb (ev_id e1) (ev_id e2) &&
+  key_eqb (ev_timestamp e1) (ev_timestamp e2) &&
+  key_eqb (ev_seq e1) (ev_seq e2) &&
   payload_eqb (ev_payload e1) (ev_payload e2) &&
   event_kind_eqb (ev_kind e1) (ev_kind e2).
 
@@ -243,9 +299,9 @@ Lemma event_eqb_spec
 Proof.
   intros [id1 ts1 sq1 pl1 k1] [id2 ts2 sq2 pl2 k2].
   unfold event_eqb; simpl.
-  destruct (Nat.eqb_spec id1 id2);
-  destruct (Nat.eqb_spec ts1 ts2);
-  destruct (Nat.eqb_spec sq1 sq2);
+  destruct (key_eqb_spec id1 id2);
+  destruct (key_eqb_spec ts1 ts2);
+  destruct (key_eqb_spec sq1 sq2);
   destruct (payload_eqb_spec pl1 pl2);
   destruct (event_kind_eqb_spec k1 k2);
   constructor; try (subst; reflexivity);
@@ -273,13 +329,13 @@ Qed.
     payload field.  Order: timestamp, seq, id, payload, kind. *)
 
 Definition event_compare (e1 e2 : event) : comparison :=
-  match Nat.compare (ev_timestamp e1) (ev_timestamp e2) with
+  match key_compare (ev_timestamp e1) (ev_timestamp e2) with
   | Lt => Lt | Gt => Gt
   | Eq =>
-    match Nat.compare (ev_seq e1) (ev_seq e2) with
+    match key_compare (ev_seq e1) (ev_seq e2) with
     | Lt => Lt | Gt => Gt
     | Eq =>
-      match Nat.compare (ev_id e1) (ev_id e2) with
+      match key_compare (ev_id e1) (ev_id e2) with
       | Lt => Lt | Gt => Gt
       | Eq =>
         match payload_compare (ev_payload e1) (ev_payload e2) with
@@ -301,9 +357,9 @@ Lemma event_compare_refl
   : forall e, event_compare e e = Eq.
 Proof.
   intros [id ts sq pl k]. unfold event_compare. simpl.
-  rewrite Nat.compare_refl.
-  rewrite Nat.compare_refl.
-  rewrite Nat.compare_refl.
+  rewrite key_compare_refl.
+  rewrite key_compare_refl.
+  rewrite key_compare_refl.
   rewrite payload_compare_refl.
   rewrite Nat.compare_refl.
   reflexivity.
@@ -314,12 +370,12 @@ Lemma event_compare_antisym
 Proof.
   intros [id1 ts1 sq1 pl1 k1] [id2 ts2 sq2 pl2 k2].
   unfold event_compare. simpl.
-  rewrite Nat.compare_antisym.
-  destruct (Nat.compare ts2 ts1) eqn:Hts; simpl; try reflexivity.
-  rewrite Nat.compare_antisym.
-  destruct (Nat.compare sq2 sq1) eqn:Hsq; simpl; try reflexivity.
-  rewrite Nat.compare_antisym.
-  destruct (Nat.compare id2 id1) eqn:Hid; simpl; try reflexivity.
+  rewrite key_compare_antisym.
+  destruct (key_compare ts2 ts1) eqn:Hts; simpl; try reflexivity.
+  rewrite key_compare_antisym.
+  destruct (key_compare sq2 sq1) eqn:Hsq; simpl; try reflexivity.
+  rewrite key_compare_antisym.
+  destruct (key_compare id2 id1) eqn:Hid; simpl; try reflexivity.
   rewrite payload_compare_antisym.
   destruct (payload_compare pl2 pl1) eqn:Hpl; simpl; try reflexivity.
   rewrite Nat.compare_antisym.
@@ -331,12 +387,12 @@ Lemma event_compare_eq
 Proof.
   intros [id1 ts1 sq1 pl1 k1] [id2 ts2 sq2 pl2 k2].
   unfold event_compare. simpl.
-  destruct (Nat.compare ts1 ts2) eqn:Hts; try discriminate.
-  apply Nat.compare_eq_iff in Hts. subst ts2.
-  destruct (Nat.compare sq1 sq2) eqn:Hsq; try discriminate.
-  apply Nat.compare_eq_iff in Hsq. subst sq2.
-  destruct (Nat.compare id1 id2) eqn:Hid; try discriminate.
-  apply Nat.compare_eq_iff in Hid. subst id2.
+  destruct (key_compare ts1 ts2) eqn:Hts; try discriminate.
+  apply key_compare_eq in Hts. subst ts2.
+  destruct (key_compare sq1 sq2) eqn:Hsq; try discriminate.
+  apply key_compare_eq in Hsq. subst sq2.
+  destruct (key_compare id1 id2) eqn:Hid; try discriminate.
+  apply key_compare_eq in Hid. subst id2.
   destruct (payload_compare pl1 pl2) eqn:Hpl; try discriminate.
   apply payload_compare_eq in Hpl. subst pl2.
   destruct (Nat.compare (kind_index k1) (kind_index k2)) eqn:Hk; try discriminate.
@@ -395,25 +451,25 @@ Proof.
   intros [id1 ts1 sq1 pl1 k1] [id2 ts2 sq2 pl2 k2] [id3 ts3 sq3 pl3 k3].
   unfold event_compare. simpl.
   intros H12 H23.
-  destruct (Nat.compare ts1 ts2) eqn:Hts12;
-    [ apply Nat.compare_eq_iff in Hts12; subst ts2 |
+  destruct (key_compare ts1 ts2) eqn:Hts12;
+    [ apply key_compare_eq in Hts12; subst ts2 |
     | exfalso; apply H12; reflexivity ].
-  - destruct (Nat.compare ts1 ts3) eqn:Hts13;
-      [ apply Nat.compare_eq_iff in Hts13; subst ts3 |
+  - destruct (key_compare ts1 ts3) eqn:Hts13;
+      [ apply key_compare_eq in Hts13; subst ts3 |
         intro; discriminate
       | exfalso; apply H23; reflexivity ].
-    destruct (Nat.compare sq1 sq2) eqn:Hsq12;
-      [ apply Nat.compare_eq_iff in Hsq12; subst sq2 |
+    destruct (key_compare sq1 sq2) eqn:Hsq12;
+      [ apply key_compare_eq in Hsq12; subst sq2 |
       | exfalso; apply H12; reflexivity ].
-    + destruct (Nat.compare sq1 sq3) eqn:Hsq13;
-        [ apply Nat.compare_eq_iff in Hsq13; subst sq3 |
+    + destruct (key_compare sq1 sq3) eqn:Hsq13;
+        [ apply key_compare_eq in Hsq13; subst sq3 |
           intro; discriminate
         | exfalso; apply H23; reflexivity ].
-      destruct (Nat.compare id1 id2) eqn:Hid12;
-        [ apply Nat.compare_eq_iff in Hid12; subst id2 |
+      destruct (key_compare id1 id2) eqn:Hid12;
+        [ apply key_compare_eq in Hid12; subst id2 |
         | exfalso; apply H12; reflexivity ].
-      * destruct (Nat.compare id1 id3) eqn:Hid13;
-          [ apply Nat.compare_eq_iff in Hid13; subst id3 |
+      * destruct (key_compare id1 id3) eqn:Hid13;
+          [ apply key_compare_eq in Hid13; subst id3 |
             intro; discriminate
           | exfalso; apply H23; reflexivity ].
         destruct (payload_compare pl1 pl2) eqn:Hpl12;
@@ -437,42 +493,42 @@ Proof.
                    try (intro Hc; discriminate).
                  exfalso; apply H23; reflexivity.
               ** exact Hpl13.
-      * destruct (Nat.compare id1 id3) eqn:Hid13.
-        -- apply Nat.compare_eq_iff in Hid13. subst id3.
+      * destruct (key_compare id1 id3) eqn:Hid13.
+        -- apply key_compare_eq in Hid13. subst id3.
            exfalso. apply H23.
-           rewrite Nat.compare_antisym. rewrite Hid12. simpl.
+           rewrite key_compare_antisym. rewrite Hid12. simpl.
            reflexivity.
         -- intro Hc. discriminate.
         -- exfalso.
-           apply (nat_compare_not_gt_trans id1 id2 id3).
+           apply (key_compare_not_gt_trans id1 id2 id3).
            ++ intro Hc. rewrite Hc in Hid12. discriminate.
-           ++ destruct (Nat.compare id2 id3) eqn:Hid23;
+           ++ destruct (key_compare id2 id3) eqn:Hid23;
                 try (intro Hc; discriminate).
               exfalso; apply H23; reflexivity.
            ++ exact Hid13.
-    + destruct (Nat.compare sq1 sq3) eqn:Hsq13.
-      * apply Nat.compare_eq_iff in Hsq13. subst sq3.
+    + destruct (key_compare sq1 sq3) eqn:Hsq13.
+      * apply key_compare_eq in Hsq13. subst sq3.
         exfalso. apply H23.
-        rewrite Nat.compare_antisym. rewrite Hsq12. simpl.
+        rewrite key_compare_antisym. rewrite Hsq12. simpl.
         reflexivity.
       * intro Hc. discriminate.
       * exfalso.
-        apply (nat_compare_not_gt_trans sq1 sq2 sq3).
+        apply (key_compare_not_gt_trans sq1 sq2 sq3).
         -- intro Hc. rewrite Hc in Hsq12. discriminate.
-        -- destruct (Nat.compare sq2 sq3) eqn:Hsq23;
+        -- destruct (key_compare sq2 sq3) eqn:Hsq23;
              try (intro Hc; discriminate).
            exfalso; apply H23; reflexivity.
         -- exact Hsq13.
-  - destruct (Nat.compare ts1 ts3) eqn:Hts13.
-    + apply Nat.compare_eq_iff in Hts13. subst ts3.
+  - destruct (key_compare ts1 ts3) eqn:Hts13.
+    + apply key_compare_eq in Hts13. subst ts3.
       exfalso. apply H23.
-      rewrite Nat.compare_antisym. rewrite Hts12. simpl.
+      rewrite key_compare_antisym. rewrite Hts12. simpl.
       reflexivity.
     + intro Hc. discriminate.
     + exfalso.
-      apply (nat_compare_not_gt_trans ts1 ts2 ts3).
+      apply (key_compare_not_gt_trans ts1 ts2 ts3).
       * intro Hc. rewrite Hc in Hts12. discriminate.
-      * destruct (Nat.compare ts2 ts3) eqn:Hts23;
+      * destruct (key_compare ts2 ts3) eqn:Hts23;
           try (intro Hc; discriminate).
         exfalso; apply H23; reflexivity.
       * exact Hts13.
@@ -665,13 +721,13 @@ Defined.
 
 (** * Last event for an id in a stream. *)
 
-Fixpoint last_with_id (id : nat) (stream : list event) : option event :=
+Fixpoint last_with_id (id : Key) (stream : list event) : option event :=
   match stream with
   | [] => None
   | e :: rest =>
     match last_with_id id rest with
     | Some e' => Some e'
-    | None => if Nat.eqb (ev_id e) id then Some e else None
+    | None => if key_eqb (ev_id e) id then Some e else None
     end
   end.
 
@@ -684,9 +740,9 @@ Proof.
   induction stream as [| h t IH]; simpl; intros id Hlast e Hin.
   - destruct Hin.
   - destruct (last_with_id id t) eqn:Ht; [ discriminate | ].
-    destruct (Nat.eqb (ev_id h) id) eqn:Heq; [ discriminate | ].
+    destruct (key_eqb (ev_id h) id) eqn:Heq; [ discriminate | ].
     destruct Hin as [<- | Hin].
-    + apply Nat.eqb_neq. exact Heq.
+    + apply key_eqb_neq. exact Heq.
     + exact (IH id Ht e Hin).
 Defined.
 
@@ -696,7 +752,7 @@ Fixpoint replace_or_add (e : event) (acc : list event) : list event :=
   match acc with
   | [] => [e]
   | h :: t =>
-    if Nat.eqb (ev_id h) (ev_id e) then
+    if key_eqb (ev_id h) (ev_id e) then
       if should_replace h e then e :: t
       else h :: t
     else h :: replace_or_add e t
@@ -721,91 +777,72 @@ Fixpoint apply_events (sorted : list event) (acc : list event) : list event :=
     satisfy apply_events_spec / apply_events_map_spec, so their
     outputs are identical after sorting (by sort_unique). *)
 
-(** Shorthand to avoid elt-inference failures. *)
-Definition IdMap_In (id : nat) (m : IdMap.t event) : Prop :=
-  IdMap.In (elt:=event) id m.
-
-Definition replace_or_add_map (e : event) (m : IdMap.t event) : IdMap.t event :=
-  match IdMap.find (ev_id e) m with
+Definition replace_or_add_map (e : event) (m : KMap) : KMap :=
+  match kmap_find (ev_id e) m with
   | Some old => if should_replace old e
-                then IdMap.add (ev_id e) e m
+                then kmap_add (ev_id e) e m
                 else m
-  | None => IdMap.add (ev_id e) e m
+  | None => kmap_add (ev_id e) e m
   end.
 
-Fixpoint apply_events_map (sorted : list event) (m : IdMap.t event)
-  : IdMap.t event :=
+Fixpoint apply_events_map (sorted : list event) (m : KMap) : KMap :=
   match sorted with
   | [] => m
   | e :: rest =>
     match ev_kind e with
     | Original => apply_events_map rest (replace_or_add_map e m)
     | Correction => apply_events_map rest (replace_or_add_map e m)
-    | Cancel => apply_events_map rest (IdMap.remove (ev_id e) m)
+    | Cancel => apply_events_map rest (kmap_remove (ev_id e) m)
     end
   end.
 
-Definition map_values (m : IdMap.t event) : list event :=
-  map snd (IdMap.elements m).
+Definition map_values (m : KMap) : list event :=
+  map snd (kmap_elements m).
 
 (** Map-based helpers for the semantic spec proof. *)
 
 Lemma replace_or_add_map_In_id
-  : forall e m, IdMap_In (ev_id e) (replace_or_add_map e m).
+  : forall e m, kmap_In (ev_id e) (replace_or_add_map e m).
 Proof.
   intros e m. unfold replace_or_add_map.
-  destruct (IdMap.find (ev_id e) m) as [old |] eqn:Hf.
+  destruct (kmap_find (ev_id e) m) as [old |] eqn:Hf.
   - destruct (should_replace old e).
-    + exists e. apply IdMap.add_1. reflexivity.
-    + exists old. apply IdMap.find_2. exact Hf.
-  - exists e. apply IdMap.add_1. reflexivity.
+    + apply kmap_add_In_same.
+    + apply kmap_find_In with old. exact Hf.
+  - apply kmap_add_In_same.
 Defined.
 
 Lemma replace_or_add_map_other
   : forall e m id,
     ev_id e <> id ->
-    IdMap_In id (replace_or_add_map e m) <-> IdMap_In id m.
+    kmap_In id (replace_or_add_map e m) <-> kmap_In id m.
 Proof.
   intros e m id Hne. unfold replace_or_add_map.
-  assert (Hne' : ~ Nat_as_OT.eq (ev_id e) id) by exact Hne.
-  destruct (IdMap.find (ev_id e) m) as [old |] eqn:Hf.
+  destruct (kmap_find (ev_id e) m) as [old |] eqn:Hf.
   - destruct (should_replace old e).
-    + split.
-      * intros [v Hv]. exists v.
-        apply IdMap.add_3 in Hv; [ exact Hv | exact Hne' ].
-      * intros [v Hv]. exists v.
-        apply IdMap.add_2; [ exact Hne' | exact Hv ].
+    + apply kmap_add_In_other. exact Hne.
     + split; intro H; exact H.
-  - split.
-    * intros [v Hv]. exists v.
-      apply IdMap.add_3 in Hv; [ exact Hv | exact Hne' ].
-    * intros [v Hv]. exists v.
-      apply IdMap.add_2; [ exact Hne' | exact Hv ].
+  - apply kmap_add_In_other. exact Hne.
 Defined.
 
 Lemma remove_In_other
-  : forall id id' (m : IdMap.t event),
+  : forall id id' (m : KMap),
     id' <> id ->
-    IdMap_In id' (IdMap.remove id m) <-> IdMap_In id' m.
+    kmap_In id' (kmap_remove id m) <-> kmap_In id' m.
 Proof.
-  intros id id' m Hne. split.
-  - intros [v Hv]. exists v.
-    apply IdMap.remove_3 in Hv. exact Hv.
-  - intros [v Hv]. exists v.
-    apply IdMap.remove_2; [ intro Hc; apply Hne; symmetry; exact Hc | exact Hv ].
+  intros id id' m Hne. apply kmap_remove_In_other. exact Hne.
 Defined.
 
 Lemma remove_not_In
-  : forall id (m : IdMap.t event), ~ IdMap_In id (IdMap.remove id m).
+  : forall id (m : KMap), ~ kmap_In id (kmap_remove id m).
 Proof.
-  intros id m Hin.
-  apply (IdMap.remove_1 (m:=m) (eq_refl id)). exact Hin.
+  intros id m. apply kmap_remove_not_In.
 Defined.
 
 Lemma apply_events_map_no_id_transparent
-  : forall stream (m : IdMap.t event) id,
+  : forall stream (m : KMap) id,
     (forall e, In e stream -> ev_id e <> id) ->
-    IdMap_In id (apply_events_map stream m) <-> IdMap_In id m.
+    kmap_In id (apply_events_map stream m) <-> kmap_In id m.
 Proof.
   induction stream as [| e rest IH]; simpl; intros m id Hall.
   - split; intro H; exact H.
@@ -825,10 +862,10 @@ Defined.
     as the list-based version. *)
 
 Theorem apply_events_map_spec
-  : forall stream (m : IdMap.t event) id,
-    IdMap_In id (apply_events_map stream m) <->
+  : forall stream (m : KMap) id,
+    kmap_In id (apply_events_map stream m) <->
     match last_with_id id stream with
-    | None => IdMap.In id m
+    | None => kmap_In id m
     | Some e => ev_kind e <> Cancel
     end.
 Proof.
@@ -840,12 +877,12 @@ Proof.
         rewrite Hlast in IH. exact IH.
       * specialize (IH (replace_or_add_map e m) id).
         rewrite Hlast in IH. exact IH.
-      * specialize (IH (IdMap.remove (ev_id e) m) id).
+      * specialize (IH (kmap_remove (ev_id e) m) id).
         rewrite Hlast in IH. exact IH.
     + assert (Hrest : forall x, In x rest -> ev_id x <> id)
         by (intros x Hx; exact (last_with_id_None id rest Hlast x Hx)).
-      destruct (Nat.eqb (ev_id e) id) eqn:Heq.
-      * apply Nat.eqb_eq in Heq. subst id.
+      destruct (key_eqb (ev_id e) id) eqn:Heq.
+      * apply key_eqb_eq in Heq. subst id.
         destruct (ev_kind e) eqn:Hk.
         -- rewrite apply_events_map_no_id_transparent by exact Hrest.
            split; [ intro; discriminate | ].
@@ -856,7 +893,7 @@ Proof.
         -- rewrite apply_events_map_no_id_transparent by exact Hrest.
            split; [ intro Hin; exfalso; exact (remove_not_In (ev_id e) m Hin) | ].
            intro Habs. exfalso. apply Habs. reflexivity.
-      * apply Nat.eqb_neq in Heq.
+      * apply key_eqb_neq in Heq.
         destruct (ev_kind e) eqn:Hk.
         -- rewrite apply_events_map_no_id_transparent by exact Hrest.
            apply replace_or_add_map_other. exact Heq.
@@ -901,7 +938,7 @@ Proof.
   intros e acc Hk Hacc.
   induction acc as [| h t IH]; simpl.
   - intros x [Hx | []]. subst. exact Hk.
-  - destruct (Nat.eqb (ev_id h) (ev_id e)).
+  - destruct (key_eqb (ev_id h) (ev_id e)).
     + destruct (should_replace h e).
       * intros x [Hx | Hx]; [ subst; exact Hk | apply Hacc; right; exact Hx ].
       * intros x [Hx | Hx]; [ subst; apply Hacc; left; reflexivity | apply Hacc; right; exact Hx ].
@@ -936,7 +973,7 @@ Defined.
 
 (** * Unique ids in output. *)
 
-Definition ids_of (l : list event) : list nat := map ev_id l.
+Definition ids_of (l : list event) : list Key := map ev_id l.
 
 Lemma replace_or_add_on_fresh_id
   : forall e acc,
@@ -944,27 +981,27 @@ Lemma replace_or_add_on_fresh_id
 Proof.
   intros e acc. induction acc as [| h t IH]; simpl; intro Hfresh.
   - reflexivity.
-  - destruct (Nat.eqb (ev_id h) (ev_id e)) eqn:Heq.
-    + apply Nat.eqb_eq in Heq. exfalso. apply Hfresh. left. exact Heq.
+  - destruct (key_eqb (ev_id h) (ev_id e)) eqn:Heq.
+    + apply key_eqb_eq in Heq. exfalso. apply Hfresh. left. exact Heq.
     + f_equal. apply IH. intro Hin. apply Hfresh. right. exact Hin.
 Defined.
 
 Lemma replace_or_add_ids
   : forall e acc,
     ids_of (replace_or_add e acc) =
-    if existsb (fun x => Nat.eqb (ev_id x) (ev_id e)) acc
+    if existsb (fun x => key_eqb (ev_id x) (ev_id e)) acc
     then ids_of acc
     else ids_of acc ++ [ev_id e].
 Proof.
   intros e acc. induction acc as [| h t IH]; simpl.
   - reflexivity.
-  - destruct (Nat.eqb (ev_id h) (ev_id e)) eqn:Heq; simpl.
+  - destruct (key_eqb (ev_id h) (ev_id e)) eqn:Heq; simpl.
     + destruct (should_replace h e); simpl.
-      * unfold ids_of. simpl. apply Nat.eqb_eq in Heq. rewrite Heq. reflexivity.
+      * unfold ids_of. simpl. apply key_eqb_eq in Heq. rewrite Heq. reflexivity.
       * reflexivity.
     + unfold ids_of in *. simpl.
       rewrite IH.
-      destruct (existsb (fun x => Nat.eqb (ev_id x) (ev_id e)) t); reflexivity.
+      destruct (existsb (fun x => key_eqb (ev_id x) (ev_id e)) t); reflexivity.
 Defined.
 
 Lemma NoDup_replace_or_add
@@ -972,9 +1009,9 @@ Lemma NoDup_replace_or_add
 Proof.
   intros e acc Hnd. induction acc as [| h t IH]; simpl.
   - apply NoDup_cons. { simpl. auto. } apply NoDup_nil.
-  - destruct (Nat.eqb (ev_id h) (ev_id e)) eqn:Heq.
+  - destruct (key_eqb (ev_id h) (ev_id e)) eqn:Heq.
     + destruct (should_replace h e).
-      * apply Nat.eqb_eq in Heq.
+      * apply key_eqb_eq in Heq.
         unfold ids_of. simpl.
         inversion Hnd; subst. rewrite <- Heq.
         apply NoDup_cons; assumption.
@@ -985,12 +1022,12 @@ Proof.
       * intro Hin. apply H1.
         unfold ids_of in IH.
         rewrite replace_or_add_ids in Hin.
-        destruct (existsb (fun x => Nat.eqb (ev_id x) (ev_id e)) t).
+        destruct (existsb (fun x => key_eqb (ev_id x) (ev_id e)) t).
         -- exact Hin.
         -- apply in_app_or in Hin. destruct Hin as [Hin | Hin].
            ++ exact Hin.
            ++ simpl in Hin. destruct Hin as [Hin | []].
-              apply Nat.eqb_neq in Heq. exfalso. apply Heq. symmetry. exact Hin.
+              apply key_eqb_neq in Heq. exfalso. apply Heq. symmetry. exact Hin.
       * apply IH. exact H2.
 Defined.
 
@@ -1008,13 +1045,13 @@ Defined.
 
 Lemma filter_ids_comm
   : forall id l,
-    ids_of (filter (fun x => negb (Nat.eqb (ev_id x) id)) l) =
-    filter (fun x => negb (Nat.eqb x id)) (ids_of l).
+    ids_of (filter (fun x => negb (key_eqb (ev_id x) id)) l) =
+    filter (fun x => negb (key_eqb x id)) (ids_of l).
 Proof.
   intros id l. unfold ids_of.
   induction l as [| a t IH]; simpl.
   - reflexivity.
-  - destruct (negb (Nat.eqb (ev_id a) id)) eqn:Hf; simpl; rewrite IH; reflexivity.
+  - destruct (negb (key_eqb (ev_id a) id)) eqn:Hf; simpl; rewrite IH; reflexivity.
 Defined.
 
 Lemma apply_events_NoDup
@@ -1133,7 +1170,7 @@ Lemma replace_or_add_ids_incl
 Proof.
   intros e acc. induction acc as [| h t IH]; simpl.
   - intros x [Hx | []]. left. exact Hx.
-  - destruct (Nat.eqb (ev_id h) (ev_id e)) eqn:Heq.
+  - destruct (key_eqb (ev_id h) (ev_id e)) eqn:Heq.
     + destruct (should_replace h e).
       * intros x [Hx | Hx].
         -- left. exact Hx.
@@ -1224,10 +1261,10 @@ Lemma replace_or_add_has_id
 Proof.
   intros e acc. induction acc as [| h t IH]; simpl.
   - left. reflexivity.
-  - destruct (Nat.eqb (ev_id h) (ev_id e)) eqn:Heq.
+  - destruct (key_eqb (ev_id h) (ev_id e)) eqn:Heq.
     + destruct (should_replace h e).
       * left. reflexivity.
-      * left. apply Nat.eqb_eq. exact Heq.
+      * left. apply key_eqb_eq. exact Heq.
     + right. exact IH.
 Defined.
 
@@ -1240,9 +1277,9 @@ Proof.
   - split.
     + intros [Hx | []]. exfalso. apply Hne. exact Hx.
     + intros [].
-  - destruct (Nat.eqb (ev_id h) (ev_id e)) eqn:Heq.
+  - destruct (key_eqb (ev_id h) (ev_id e)) eqn:Heq.
     + destruct (should_replace h e).
-      * apply Nat.eqb_eq in Heq.
+      * apply key_eqb_eq in Heq.
         unfold ids_of. simpl. rewrite Heq.
         split; intro H; exact H.
       * split; intro H; exact H.
@@ -1253,13 +1290,13 @@ Defined.
 
 Lemma filter_removes_id
   : forall id acc,
-    ~ In id (ids_of (filter (fun x => negb (Nat.eqb (ev_id x) id)) acc)).
+    ~ In id (ids_of (filter (fun x => negb (key_eqb (ev_id x) id)) acc)).
 Proof.
   intros id acc. induction acc as [| h t IH]; simpl.
   - intro H. exact H.
-  - destruct (negb (Nat.eqb (ev_id h) id)) eqn:Hf.
+  - destruct (negb (key_eqb (ev_id h) id)) eqn:Hf.
     + simpl. intros [Hx | Hx].
-      * apply negb_true_iff in Hf. apply Nat.eqb_neq in Hf.
+      * apply negb_true_iff in Hf. apply key_eqb_neq in Hf.
         apply Hf. exact Hx.
       * exact (IH Hx).
     + exact IH.
@@ -1268,19 +1305,19 @@ Defined.
 Lemma filter_preserves_other_id
   : forall id id' acc,
     id' <> id ->
-    In id' (ids_of (filter (fun x => negb (Nat.eqb (ev_id x) id)) acc)) <->
+    In id' (ids_of (filter (fun x => negb (key_eqb (ev_id x) id)) acc)) <->
     In id' (ids_of acc).
 Proof.
   intros id id' acc Hne. induction acc as [| h t IH]; simpl.
   - split; intro H; exact H.
-  - destruct (negb (Nat.eqb (ev_id h) id)) eqn:Hf.
+  - destruct (negb (key_eqb (ev_id h) id)) eqn:Hf.
     + simpl. split.
       * intros [Hx | Hx]; [ left; exact Hx | right; apply IH; exact Hx ].
       * intros [Hx | Hx]; [ left; exact Hx | right; apply IH; exact Hx ].
     + split.
       * intro Hx. right. apply IH. exact Hx.
       * intros [Hx | Hx].
-        -- exfalso. apply negb_false_iff in Hf. apply Nat.eqb_eq in Hf.
+        -- exfalso. apply negb_false_iff in Hf. apply key_eqb_eq in Hf.
            apply Hne. rewrite <- Hx. exact Hf.
         -- apply IH. exact Hx.
 Defined.
@@ -1326,8 +1363,8 @@ Proof.
     + (* No event for id in rest. *)
       assert (Hrest : forall x, In x rest -> ev_id x <> id)
         by (intros x Hx; exact (last_with_id_None id rest Hlast x Hx)).
-      destruct (Nat.eqb (ev_id e) id) eqn:Heq.
-      * apply Nat.eqb_eq in Heq. subst id.
+      destruct (key_eqb (ev_id e) id) eqn:Heq.
+      * apply key_eqb_eq in Heq. subst id.
         destruct (ev_kind e) eqn:Hk.
         -- (* Original: adds to acc, rest doesn't touch it. *)
            rewrite apply_events_no_id_transparent by exact Hrest.
@@ -1345,7 +1382,7 @@ Proof.
            ++ intro Hin. exfalso. exact (cancel_handler_removes_id e acc Hin).
            ++ intro Habs. exfalso. apply Habs. reflexivity.
       * (* Head event has different id — transparent. *)
-        apply Nat.eqb_neq in Heq.
+        apply key_eqb_neq in Heq.
         destruct (ev_kind e) eqn:Hk.
         -- rewrite apply_events_no_id_transparent by exact Hrest.
            apply replace_or_add_other_id. exact Heq.
@@ -1426,24 +1463,24 @@ Defined.
     from the canonical output, indicating they were cancelled or
     superseded without replacement. *)
 
-Fixpoint mem_nat (n : nat) (l : list nat) : bool :=
+Fixpoint mem_key (n : Key) (l : list Key) : bool :=
   match l with
   | [] => false
-  | h :: t => Nat.eqb n h || mem_nat n t
+  | h :: t => key_eqb n h || mem_key n t
   end.
 
-Fixpoint dedup_nat (l : list nat) : list nat :=
+Fixpoint dedup_key (l : list Key) : list Key :=
   match l with
   | [] => []
   | h :: t =>
-    if mem_nat h t then dedup_nat t
-    else h :: dedup_nat t
+    if mem_key h t then dedup_key t
+    else h :: dedup_key t
   end.
 
-Definition detect_gaps (stream : list event) : list nat :=
-  let input_ids := dedup_nat (ids_of stream) in
+Definition detect_gaps (stream : list event) : list Key :=
+  let input_ids := dedup_key (ids_of stream) in
   let output_ids := ids_of (canonicalize stream) in
-  filter (fun id => negb (mem_nat id output_ids)) input_ids.
+  filter (fun id => negb (mem_key id output_ids)) input_ids.
 
 End Parameterized.
 
@@ -1484,27 +1521,27 @@ Lemma nat_payload_eqb_spec
   : forall p1 p2, reflect (p1 = p2) (Nat.eqb p1 p2).
 Proof. intros. apply Nat.eqb_spec. Qed.
 
-Definition nat_should_replace (old new_ : event nat) : bool :=
-  Nat.leb (ev_seq nat old) (ev_seq nat new_).
+Definition nat_should_replace (old new_ : event nat nat) : bool :=
+  Nat.leb (ev_seq nat nat old) (ev_seq nat nat new_).
 
-Definition nat_cancel_handler (e : event nat) (acc : list (event nat))
-  : list (event nat) :=
-  filter (fun x => negb (Nat.eqb (ev_id nat x) (ev_id nat e))) acc.
+Definition nat_cancel_handler (e : event nat nat) (acc : list (event nat nat))
+  : list (event nat nat) :=
+  filter (fun x => negb (Nat.eqb (ev_id nat nat x) (ev_id nat nat e))) acc.
 
 (** Convenience aliases for the nat-instantiated definitions. *)
 
-Notation nat_event := (event nat).
-Notation nat_canonicalize := (canonicalize nat Nat.compare nat_should_replace nat_cancel_handler).
-Notation nat_fold_stream := (fold_stream nat Nat.compare nat_should_replace nat_cancel_handler).
-Notation nat_sort_events := (sort_events nat Nat.compare).
-Notation nat_apply_events := (apply_events nat nat_should_replace nat_cancel_handler).
-Notation nat_process_one := (process_one nat nat_should_replace nat_cancel_handler).
-Notation nat_event_leb := (event_leb nat Nat.compare).
-Notation nat_event_eqb := (event_eqb nat Nat.compare Nat.eqb).
-Notation nat_detect_gaps := (detect_gaps nat Nat.compare nat_should_replace nat_cancel_handler).
-Notation nat_replace_or_add_map := (replace_or_add_map nat nat_should_replace).
-Notation nat_apply_events_map := (apply_events_map nat nat_should_replace).
-Notation nat_map_values := (map_values nat).
+Notation nat_event := (event nat nat).
+Notation nat_canonicalize := (canonicalize nat Nat.compare Nat.eqb nat Nat.compare nat_should_replace nat_cancel_handler).
+Notation nat_fold_stream := (fold_stream nat Nat.compare Nat.eqb nat Nat.compare nat_should_replace nat_cancel_handler).
+Notation nat_sort_events := (sort_events nat Nat.compare nat Nat.compare).
+Notation nat_apply_events := (apply_events nat Nat.eqb nat nat_should_replace nat_cancel_handler).
+Notation nat_process_one := (process_one nat Nat.eqb nat nat_should_replace nat_cancel_handler).
+Notation nat_event_leb := (event_leb nat Nat.compare nat Nat.compare).
+Notation nat_event_eqb := (event_eqb nat Nat.eqb nat Nat.compare Nat.eqb).
+Notation nat_detect_gaps := (detect_gaps nat Nat.compare Nat.eqb nat Nat.compare nat_should_replace nat_cancel_handler).
+Notation nat_replace_or_add_map := (replace_or_add_map nat Nat.eqb nat nat_should_replace).
+Notation nat_apply_events_map := (apply_events_map nat Nat.eqb nat nat_should_replace).
+Notation nat_map_values := (map_values nat nat).
 
 (** * Worked examples: real-world canonicalization scenarios.
 
@@ -1518,9 +1555,9 @@ Notation nat_map_values := (map_values nat).
 
 (** Notational convenience. *)
 
-Definition orig  id ts sq pl := @mkEvent nat id ts sq pl Original.
-Definition corr  id ts sq pl := @mkEvent nat id ts sq pl Correction.
-Definition cancl id ts sq    := @mkEvent nat id ts sq 0  Cancel.
+Definition orig  id ts sq pl := @mkEvent nat nat id ts sq pl Original.
+Definition corr  id ts sq pl := @mkEvent nat nat id ts sq pl Correction.
+Definition cancl id ts sq    := @mkEvent nat nat id ts sq 0  Cancel.
 
 (** ** I. Equity trading desk — flash-crash replay.
 
