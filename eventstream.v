@@ -196,6 +196,25 @@ Record event : Type := mkEvent {
     means the new event wins when both share the same id. *)
 Variable should_replace : event -> event -> bool.
 
+(** Cancel semantics: cancel_handler cancel_event accumulator returns
+    the accumulator with the cancelled event's effects removed. *)
+Variable cancel_handler : event -> list event -> list event.
+
+Hypothesis cancel_handler_removes_id
+  : forall e acc, ~ In (ev_id e) (map ev_id (cancel_handler e acc)).
+Hypothesis cancel_handler_preserves_other_id
+  : forall e acc id,
+    ev_id e <> id ->
+    In id (map ev_id (cancel_handler e acc)) <-> In id (map ev_id acc).
+Hypothesis cancel_handler_no_cancels
+  : forall e acc,
+    (forall x, In x acc -> ev_kind x <> Cancel) ->
+    (forall x, In x (cancel_handler e acc) -> ev_kind x <> Cancel).
+Hypothesis cancel_handler_NoDup
+  : forall e acc, NoDup (map ev_id acc) -> NoDup (map ev_id (cancel_handler e acc)).
+Hypothesis cancel_handler_ids_incl
+  : forall e acc, incl (map ev_id (cancel_handler e acc)) (map ev_id acc).
+
 (** * Decidable equality. *)
 
 Definition event_kind_eqb (k1 k2 : event_kind) : bool :=
@@ -691,7 +710,7 @@ Fixpoint apply_events (sorted : list event) (acc : list event) : list event :=
     | Original => apply_events rest (replace_or_add e acc)
     | Correction => apply_events rest (replace_or_add e acc)
     | Cancel =>
-      apply_events rest (filter (fun x => negb (Nat.eqb (ev_id x) (ev_id e))) acc)
+      apply_events rest (cancel_handler e acc)
     end
   end.
 
@@ -912,7 +931,7 @@ Proof.
   - destruct (ev_kind e) eqn:Hk.
     + apply IH. apply replace_or_add_no_cancels; [ rewrite Hk; discriminate | exact Hacc ].
     + apply IH. apply replace_or_add_no_cancels; [ rewrite Hk; discriminate | exact Hacc ].
-    + apply IH. apply filter_no_cancels. exact Hacc.
+    + apply IH. intros x Hx. apply (cancel_handler_no_cancels e acc Hacc x Hx).
 Defined.
 
 (** * Unique ids in output. *)
@@ -1006,7 +1025,7 @@ Proof.
   - destruct (ev_kind e); apply IH.
     + apply NoDup_replace_or_add. exact Hnd.
     + apply NoDup_replace_or_add. exact Hnd.
-    + rewrite filter_ids_comm. apply NoDup_filter. exact Hnd.
+    + unfold ids_of. apply cancel_handler_NoDup. exact Hnd.
 Defined.
 
 (** * apply_events on a no-cancel, unique-id stream starting from empty. *)
@@ -1159,14 +1178,14 @@ Proof.
         + left. exact Hz.
         + right. apply in_or_app. right. exact Hz. }
     assert (Hgoal2 : forall x,
-      In x (ids_of (apply_events rest (filter (fun x0 => negb (Nat.eqb (ev_id x0) (ev_id e))) acc))) ->
+      In x (ids_of (apply_events rest (cancel_handler e acc))) ->
       In x (ev_id e :: ids_of rest ++ ids_of acc)).
     { intros y Hy.
       specialize (IH _ y Hy).
       apply in_app_or in IH. destruct IH as [Hy' | Hy'].
       - right. apply in_or_app. left. exact Hy'.
       - right. apply in_or_app. right.
-        apply (filter_ids_incl _ acc y Hy'). }
+        apply (cancel_handler_ids_incl e acc y Hy'). }
     destruct (ev_kind e); intros x Hx.
     + apply Hgoal. exact Hx.
     + apply Hgoal. exact Hx.
@@ -1284,7 +1303,7 @@ Proof.
     + rewrite IH by exact Hrest.
       apply replace_or_add_other_id. exact Hne.
     + rewrite IH by exact Hrest.
-      apply filter_preserves_other_id. intro Hc. apply Hne. symmetry. exact Hc.
+      unfold ids_of. apply cancel_handler_preserves_other_id. exact Hne.
 Defined.
 
 Theorem apply_events_spec
@@ -1302,7 +1321,7 @@ Proof.
       destruct (ev_kind e) eqn:Hk.
       * specialize (IH (replace_or_add e acc) id). rewrite Hlast in IH. exact IH.
       * specialize (IH (replace_or_add e acc) id). rewrite Hlast in IH. exact IH.
-      * specialize (IH (filter (fun x => negb (Nat.eqb (ev_id x) (ev_id e))) acc) id).
+      * specialize (IH (cancel_handler e acc) id).
         rewrite Hlast in IH. exact IH.
     + (* No event for id in rest. *)
       assert (Hrest : forall x, In x rest -> ev_id x <> id)
@@ -1323,7 +1342,7 @@ Proof.
         -- (* Cancel: removes from acc, rest doesn't re-add. *)
            rewrite apply_events_no_id_transparent by exact Hrest.
            split.
-           ++ intro Hin. exfalso. exact (filter_removes_id (ev_id e) acc Hin).
+           ++ intro Hin. exfalso. exact (cancel_handler_removes_id e acc Hin).
            ++ intro Habs. exfalso. apply Habs. reflexivity.
       * (* Head event has different id — transparent. *)
         apply Nat.eqb_neq in Heq.
@@ -1333,7 +1352,7 @@ Proof.
         -- rewrite apply_events_no_id_transparent by exact Hrest.
            apply replace_or_add_other_id. exact Heq.
         -- rewrite apply_events_no_id_transparent by exact Hrest.
-           apply filter_preserves_other_id. intro Hc. apply Heq. symmetry. exact Hc.
+           unfold ids_of. apply cancel_handler_preserves_other_id. exact Heq.
 Defined.
 
 (** Lift to canonicalize. *)
@@ -1361,7 +1380,7 @@ Definition process_one (acc : list event) (e : event) : list event :=
   match ev_kind e with
   | Original => replace_or_add e acc
   | Correction => replace_or_add e acc
-  | Cancel => filter (fun x => negb (Nat.eqb (ev_id x) (ev_id e))) acc
+  | Cancel => cancel_handler e acc
   end.
 
 Lemma fold_left_eq_apply_events
@@ -1468,17 +1487,21 @@ Proof. intros. apply Nat.eqb_spec. Qed.
 Definition nat_should_replace (old new_ : event nat) : bool :=
   Nat.leb (ev_seq nat old) (ev_seq nat new_).
 
+Definition nat_cancel_handler (e : event nat) (acc : list (event nat))
+  : list (event nat) :=
+  filter (fun x => negb (Nat.eqb (ev_id nat x) (ev_id nat e))) acc.
+
 (** Convenience aliases for the nat-instantiated definitions. *)
 
 Notation nat_event := (event nat).
-Notation nat_canonicalize := (canonicalize nat Nat.compare nat_should_replace).
-Notation nat_fold_stream := (fold_stream nat Nat.compare nat_should_replace).
+Notation nat_canonicalize := (canonicalize nat Nat.compare nat_should_replace nat_cancel_handler).
+Notation nat_fold_stream := (fold_stream nat Nat.compare nat_should_replace nat_cancel_handler).
 Notation nat_sort_events := (sort_events nat Nat.compare).
-Notation nat_apply_events := (apply_events nat nat_should_replace).
-Notation nat_process_one := (process_one nat nat_should_replace).
+Notation nat_apply_events := (apply_events nat nat_should_replace nat_cancel_handler).
+Notation nat_process_one := (process_one nat nat_should_replace nat_cancel_handler).
 Notation nat_event_leb := (event_leb nat Nat.compare).
 Notation nat_event_eqb := (event_eqb nat Nat.compare Nat.eqb).
-Notation nat_detect_gaps := (detect_gaps nat Nat.compare nat_should_replace).
+Notation nat_detect_gaps := (detect_gaps nat Nat.compare nat_should_replace nat_cancel_handler).
 Notation nat_replace_or_add_map := (replace_or_add_map nat nat_should_replace).
 Notation nat_apply_events_map := (apply_events_map nat nat_should_replace).
 Notation nat_map_values := (map_values nat).
