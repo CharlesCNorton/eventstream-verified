@@ -159,11 +159,36 @@ Inductive event_kind : Type :=
   | Correction
   | Cancel.
 
+(** * AVL map keyed by nat, used for the map-based accumulator.
+    Defined outside the Section because Coq forbids Modules inside Sections. *)
+
+Module IdMap := FMapAVL.Make(Nat_as_OT).
+
+Section Parameterized.
+
+Variable Payload : Type.
+Variable payload_compare : Payload -> Payload -> comparison.
+Variable payload_eqb : Payload -> Payload -> bool.
+
+Hypothesis payload_compare_refl
+  : forall p, payload_compare p p = Eq.
+Hypothesis payload_compare_antisym
+  : forall p1 p2, payload_compare p1 p2 = CompOpp (payload_compare p2 p1).
+Hypothesis payload_compare_eq
+  : forall p1 p2, payload_compare p1 p2 = Eq -> p1 = p2.
+Hypothesis payload_compare_not_gt_trans
+  : forall p1 p2 p3,
+    payload_compare p1 p2 <> Gt ->
+    payload_compare p2 p3 <> Gt ->
+    payload_compare p1 p3 <> Gt.
+Hypothesis payload_eqb_spec
+  : forall p1 p2, reflect (p1 = p2) (payload_eqb p1 p2).
+
 Record event : Type := mkEvent {
   ev_id : nat;
   ev_timestamp : nat;
   ev_seq : nat;
-  ev_payload : nat;
+  ev_payload : Payload;
   ev_kind : event_kind
 }.
 
@@ -187,7 +212,7 @@ Definition event_eqb (e1 e2 : event) : bool :=
   Nat.eqb (ev_id e1) (ev_id e2) &&
   Nat.eqb (ev_timestamp e1) (ev_timestamp e2) &&
   Nat.eqb (ev_seq e1) (ev_seq e2) &&
-  Nat.eqb (ev_payload e1) (ev_payload e2) &&
+  payload_eqb (ev_payload e1) (ev_payload e2) &&
   event_kind_eqb (ev_kind e1) (ev_kind e2).
 
 Lemma event_eqb_spec
@@ -198,7 +223,7 @@ Proof.
   destruct (Nat.eqb_spec id1 id2);
   destruct (Nat.eqb_spec ts1 ts2);
   destruct (Nat.eqb_spec sq1 sq2);
-  destruct (Nat.eqb_spec pl1 pl2);
+  destruct (payload_eqb_spec pl1 pl2);
   destruct (event_kind_eqb_spec k1 k2);
   constructor; try (subst; reflexivity);
   intro H; injection H; intros; contradiction.
@@ -221,39 +246,213 @@ Proof.
   destruct k1; destruct k2; simpl; intro H; try reflexivity; discriminate.
 Qed.
 
-Definition event_keys (e : event) : list nat :=
-  [ev_timestamp e; ev_seq e; ev_id e; ev_payload e; kind_index (ev_kind e)].
+(** Field-by-field comparison threading payload_compare for the
+    payload field.  Order: timestamp, seq, id, payload, kind. *)
 
-Lemma event_keys_injective
-  : forall e1 e2, event_keys e1 = event_keys e2 -> e1 = e2.
-Proof.
-  intros [id1 ts1 sq1 pl1 k1] [id2 ts2 sq2 pl2 k2].
-  unfold event_keys. simpl.
-  intro H. injection H. intros Hk Hp Hi Hs Ht.
-  f_equal; try assumption.
-  apply kind_index_injective. exact Hk.
-Qed.
+Definition event_compare (e1 e2 : event) : comparison :=
+  match Nat.compare (ev_timestamp e1) (ev_timestamp e2) with
+  | Lt => Lt | Gt => Gt
+  | Eq =>
+    match Nat.compare (ev_seq e1) (ev_seq e2) with
+    | Lt => Lt | Gt => Gt
+    | Eq =>
+      match Nat.compare (ev_id e1) (ev_id e2) with
+      | Lt => Lt | Gt => Gt
+      | Eq =>
+        match payload_compare (ev_payload e1) (ev_payload e2) with
+        | Lt => Lt | Gt => Gt
+        | Eq =>
+          Nat.compare (kind_index (ev_kind e1)) (kind_index (ev_kind e2))
+        end
+      end
+    end
+  end.
 
 Definition event_leb (e1 e2 : event) : bool :=
-  lex_leb (event_keys e1) (event_keys e2).
+  match event_compare e1 e2 with
+  | Gt => false
+  | _ => true
+  end.
+
+Lemma event_compare_refl
+  : forall e, event_compare e e = Eq.
+Proof.
+  intros [id ts sq pl k]. unfold event_compare. simpl.
+  rewrite Nat.compare_refl.
+  rewrite Nat.compare_refl.
+  rewrite Nat.compare_refl.
+  rewrite payload_compare_refl.
+  rewrite Nat.compare_refl.
+  reflexivity.
+Qed.
+
+Lemma event_compare_antisym
+  : forall e1 e2, event_compare e1 e2 = CompOpp (event_compare e2 e1).
+Proof.
+  intros [id1 ts1 sq1 pl1 k1] [id2 ts2 sq2 pl2 k2].
+  unfold event_compare. simpl.
+  rewrite Nat.compare_antisym.
+  destruct (Nat.compare ts2 ts1) eqn:Hts; simpl; try reflexivity.
+  rewrite Nat.compare_antisym.
+  destruct (Nat.compare sq2 sq1) eqn:Hsq; simpl; try reflexivity.
+  rewrite Nat.compare_antisym.
+  destruct (Nat.compare id2 id1) eqn:Hid; simpl; try reflexivity.
+  rewrite payload_compare_antisym.
+  destruct (payload_compare pl2 pl1) eqn:Hpl; simpl; try reflexivity.
+  rewrite Nat.compare_antisym.
+  destruct (Nat.compare (kind_index k2) (kind_index k1)); simpl; reflexivity.
+Qed.
+
+Lemma event_compare_eq
+  : forall e1 e2, event_compare e1 e2 = Eq -> e1 = e2.
+Proof.
+  intros [id1 ts1 sq1 pl1 k1] [id2 ts2 sq2 pl2 k2].
+  unfold event_compare. simpl.
+  destruct (Nat.compare ts1 ts2) eqn:Hts; try discriminate.
+  apply Nat.compare_eq_iff in Hts. subst ts2.
+  destruct (Nat.compare sq1 sq2) eqn:Hsq; try discriminate.
+  apply Nat.compare_eq_iff in Hsq. subst sq2.
+  destruct (Nat.compare id1 id2) eqn:Hid; try discriminate.
+  apply Nat.compare_eq_iff in Hid. subst id2.
+  destruct (payload_compare pl1 pl2) eqn:Hpl; try discriminate.
+  apply payload_compare_eq in Hpl. subst pl2.
+  destruct (Nat.compare (kind_index k1) (kind_index k2)) eqn:Hk; try discriminate.
+  apply Nat.compare_eq_iff in Hk. apply kind_index_injective in Hk. subst k2.
+  intro. reflexivity.
+Qed.
 
 Lemma event_leb_refl
   : forall e, event_leb e e = true.
 Proof.
-  intro e. unfold event_leb. apply lex_leb_refl.
+  intro e. unfold event_leb. rewrite event_compare_refl. reflexivity.
 Qed.
 
 Lemma event_leb_total
   : forall e1 e2, event_leb e1 e2 = true \/ event_leb e2 e1 = true.
 Proof.
-  intros e1 e2. unfold event_leb. apply lex_leb_total.
+  intros e1 e2. unfold event_leb.
+  rewrite event_compare_antisym.
+  destruct (event_compare e2 e1); simpl; auto.
 Qed.
 
 Lemma event_leb_antisym
   : forall e1 e2, event_leb e1 e2 = true -> event_leb e2 e1 = true -> e1 = e2.
 Proof.
   intros e1 e2 H1 H2. unfold event_leb in *.
-  apply event_keys_injective. apply lex_leb_antisym; assumption.
+  apply event_compare_eq.
+  destruct (event_compare e1 e2) eqn:H12; try reflexivity; try discriminate.
+  rewrite event_compare_antisym, H12 in H2. simpl in H2. discriminate.
+Qed.
+
+(** Helper for transitivity. *)
+
+Lemma nat_compare_not_gt_trans
+  : forall a b c,
+    Nat.compare a b <> Gt ->
+    Nat.compare b c <> Gt ->
+    Nat.compare a c <> Gt.
+Proof.
+  intros a b c H1 H2 H3.
+  destruct (Nat.compare a b) eqn:E1; [ | | exfalso; apply H1; reflexivity ].
+  - apply Nat.compare_eq_iff in E1. subst b. apply H2. exact H3.
+  - destruct (Nat.compare b c) eqn:E2; [ | | exfalso; apply H2; reflexivity ].
+    + apply Nat.compare_eq_iff in E2. subst c. rewrite E1 in H3. discriminate.
+    + rewrite Nat.compare_lt_iff in E1.
+      rewrite Nat.compare_lt_iff in E2.
+      rewrite Nat.compare_gt_iff in H3.
+      lia.
+Qed.
+
+Lemma event_compare_not_gt_trans
+  : forall e1 e2 e3,
+    event_compare e1 e2 <> Gt ->
+    event_compare e2 e3 <> Gt ->
+    event_compare e1 e3 <> Gt.
+Proof.
+  intros [id1 ts1 sq1 pl1 k1] [id2 ts2 sq2 pl2 k2] [id3 ts3 sq3 pl3 k3].
+  unfold event_compare. simpl.
+  intros H12 H23.
+  destruct (Nat.compare ts1 ts2) eqn:Hts12;
+    [ apply Nat.compare_eq_iff in Hts12; subst ts2 |
+    | exfalso; apply H12; reflexivity ].
+  - destruct (Nat.compare ts1 ts3) eqn:Hts13;
+      [ apply Nat.compare_eq_iff in Hts13; subst ts3 |
+        intro; discriminate
+      | exfalso; apply H23; reflexivity ].
+    destruct (Nat.compare sq1 sq2) eqn:Hsq12;
+      [ apply Nat.compare_eq_iff in Hsq12; subst sq2 |
+      | exfalso; apply H12; reflexivity ].
+    + destruct (Nat.compare sq1 sq3) eqn:Hsq13;
+        [ apply Nat.compare_eq_iff in Hsq13; subst sq3 |
+          intro; discriminate
+        | exfalso; apply H23; reflexivity ].
+      destruct (Nat.compare id1 id2) eqn:Hid12;
+        [ apply Nat.compare_eq_iff in Hid12; subst id2 |
+        | exfalso; apply H12; reflexivity ].
+      * destruct (Nat.compare id1 id3) eqn:Hid13;
+          [ apply Nat.compare_eq_iff in Hid13; subst id3 |
+            intro; discriminate
+          | exfalso; apply H23; reflexivity ].
+        destruct (payload_compare pl1 pl2) eqn:Hpl12;
+          [ apply payload_compare_eq in Hpl12; subst pl2 |
+          | exfalso; apply H12; reflexivity ].
+        -- destruct (payload_compare pl1 pl3) eqn:Hpl13;
+             [ apply payload_compare_eq in Hpl13; subst pl3 |
+               intro; discriminate
+             | exfalso; apply H23; reflexivity ].
+           apply nat_compare_not_gt_trans with (kind_index k2); assumption.
+        -- destruct (payload_compare pl1 pl3) eqn:Hpl13.
+           ++ apply payload_compare_eq in Hpl13. subst pl3.
+              exfalso. apply H23.
+              rewrite payload_compare_antisym. rewrite Hpl12. simpl.
+              reflexivity.
+           ++ intro Hc. discriminate.
+           ++ exfalso.
+              apply (payload_compare_not_gt_trans pl1 pl2 pl3).
+              ** intro Hc. rewrite Hc in Hpl12. discriminate.
+              ** destruct (payload_compare pl2 pl3) eqn:Hpl23;
+                   try (intro Hc; discriminate).
+                 exfalso; apply H23; reflexivity.
+              ** exact Hpl13.
+      * destruct (Nat.compare id1 id3) eqn:Hid13.
+        -- apply Nat.compare_eq_iff in Hid13. subst id3.
+           exfalso. apply H23.
+           rewrite Nat.compare_antisym. rewrite Hid12. simpl.
+           reflexivity.
+        -- intro Hc. discriminate.
+        -- exfalso.
+           apply (nat_compare_not_gt_trans id1 id2 id3).
+           ++ intro Hc. rewrite Hc in Hid12. discriminate.
+           ++ destruct (Nat.compare id2 id3) eqn:Hid23;
+                try (intro Hc; discriminate).
+              exfalso; apply H23; reflexivity.
+           ++ exact Hid13.
+    + destruct (Nat.compare sq1 sq3) eqn:Hsq13.
+      * apply Nat.compare_eq_iff in Hsq13. subst sq3.
+        exfalso. apply H23.
+        rewrite Nat.compare_antisym. rewrite Hsq12. simpl.
+        reflexivity.
+      * intro Hc. discriminate.
+      * exfalso.
+        apply (nat_compare_not_gt_trans sq1 sq2 sq3).
+        -- intro Hc. rewrite Hc in Hsq12. discriminate.
+        -- destruct (Nat.compare sq2 sq3) eqn:Hsq23;
+             try (intro Hc; discriminate).
+           exfalso; apply H23; reflexivity.
+        -- exact Hsq13.
+  - destruct (Nat.compare ts1 ts3) eqn:Hts13.
+    + apply Nat.compare_eq_iff in Hts13. subst ts3.
+      exfalso. apply H23.
+      rewrite Nat.compare_antisym. rewrite Hts12. simpl.
+      reflexivity.
+    + intro Hc. discriminate.
+    + exfalso.
+      apply (nat_compare_not_gt_trans ts1 ts2 ts3).
+      * intro Hc. rewrite Hc in Hts12. discriminate.
+      * destruct (Nat.compare ts2 ts3) eqn:Hts23;
+          try (intro Hc; discriminate).
+        exfalso; apply H23; reflexivity.
+      * exact Hts13.
 Qed.
 
 Lemma event_leb_trans
@@ -261,22 +460,30 @@ Lemma event_leb_trans
     event_leb e1 e2 = true -> event_leb e2 e3 = true -> event_leb e1 e3 = true.
 Proof.
   intros e1 e2 e3 H1 H2. unfold event_leb in *.
-  apply lex_leb_trans with (event_keys e2); assumption.
+  destruct (event_compare e1 e3) eqn:H13; try reflexivity.
+  exfalso.
+  apply (event_compare_not_gt_trans e1 e2 e3).
+  - destruct (event_compare e1 e2); discriminate.
+  - destruct (event_compare e2 e3); discriminate.
+  - exact H13.
 Qed.
 
-(** * Mergesort on events (O(n log n)).
-    Uses Coq.Sorting.Mergesort instantiated over event_leb. *)
+(** * Insertion sort on events.
+    Defined directly to avoid Module/Section incompatibility. *)
 
-Module EventOrder <: TotalLeBool.
-  Definition t := event.
-  Definition leb := event_leb.
-  Theorem leb_total : forall e1 e2, leb e1 e2 = true \/ leb e2 e1 = true.
-  Proof. exact event_leb_total. Qed.
-End EventOrder.
+Fixpoint insert (e : event) (l : list event) : list event :=
+  match l with
+  | [] => [e]
+  | h :: t =>
+    if event_leb e h then e :: h :: t
+    else h :: insert e t
+  end.
 
-Module EventSort := Sort EventOrder.
-
-Definition sort_events : list event -> list event := EventSort.sort.
+Fixpoint sort_events (l : list event) : list event :=
+  match l with
+  | [] => []
+  | h :: t => insert h (sort_events t)
+  end.
 
 (** * Sort correctness: output is a sorted permutation. *)
 
@@ -287,30 +494,6 @@ Inductive Sorted_leb : list event -> Prop :=
       event_leb e1 e2 = true ->
       Sorted_leb (e2 :: l) ->
       Sorted_leb (e1 :: e2 :: l).
-
-Lemma LocallySorted_bool_Sorted_leb
-  : forall l, LocallySorted (fun x y => is_true (event_leb x y)) l -> Sorted_leb l.
-Proof.
-  intros l H. induction H.
-  - apply Sorted_leb_nil.
-  - apply Sorted_leb_one.
-  - apply Sorted_leb_cons; assumption.
-Defined.
-
-Theorem sort_events_perm
-  : forall l, Permutation l (sort_events l).
-Proof.
-  intro l. unfold sort_events. apply EventSort.Permuted_sort.
-Defined.
-
-Theorem sort_events_sorted
-  : forall l, Sorted_leb (sort_events l).
-Proof.
-  intro l. apply LocallySorted_bool_Sorted_leb.
-  unfold sort_events. apply EventSort.LocallySorted_sort.
-Defined.
-
-(** * Sort helpers. *)
 
 Lemma Sorted_leb_tail
   : forall e l, Sorted_leb (e :: l) -> Sorted_leb l.
@@ -325,6 +508,66 @@ Lemma Sorted_leb_head_leb
 Proof.
   intros e1 e2 l Hs. inversion Hs; subst. assumption.
 Defined.
+
+Lemma insert_perm
+  : forall e l, Permutation (e :: l) (insert e l).
+Proof.
+  intros e l. induction l as [| h t IH]; simpl.
+  - apply Permutation_refl.
+  - destruct (event_leb e h).
+    + apply Permutation_refl.
+    + apply Permutation_trans with (h :: e :: t).
+      * apply perm_swap.
+      * apply perm_skip. exact IH.
+Defined.
+
+Theorem sort_events_perm
+  : forall l, Permutation l (sort_events l).
+Proof.
+  induction l as [| h t IH]; simpl.
+  - apply Permutation_refl.
+  - apply Permutation_trans with (h :: sort_events t).
+    + apply perm_skip. exact IH.
+    + apply insert_perm.
+Defined.
+
+Lemma insert_sorted
+  : forall e l, Sorted_leb l -> Sorted_leb (insert e l).
+Proof.
+  intros e l Hs. induction l as [| h t IH]; simpl.
+  - apply Sorted_leb_one.
+  - destruct (event_leb e h) eqn:Heh.
+    + apply Sorted_leb_cons; assumption.
+    + destruct t as [| h2 t']; simpl in *.
+      * destruct (event_leb_total e h) as [Hle | Hle].
+        -- rewrite Hle in Heh. discriminate.
+        -- apply Sorted_leb_cons. exact Hle. apply Sorted_leb_one.
+      * assert (Hhh2 : event_leb h h2 = true).
+        { exact (Sorted_leb_head_leb h h2 t' Hs). }
+        assert (Htail : Sorted_leb (h2 :: t')).
+        { exact (Sorted_leb_tail h (h2 :: t') Hs). }
+        specialize (IH Htail).
+        simpl in IH.
+        destruct (event_leb e h2) eqn:Heh2.
+        -- apply Sorted_leb_cons.
+           ++ destruct (event_leb_total e h) as [Hle | Hle].
+              ** rewrite Hle in Heh. discriminate.
+              ** exact Hle.
+           ++ apply Sorted_leb_cons; assumption.
+        -- apply Sorted_leb_cons.
+           ++ exact Hhh2.
+           ++ exact IH.
+Defined.
+
+Theorem sort_events_sorted
+  : forall l, Sorted_leb (sort_events l).
+Proof.
+  induction l as [| h t IH]; simpl.
+  - apply Sorted_leb_nil.
+  - apply insert_sorted. exact IH.
+Defined.
+
+(** * Sort helpers. *)
 
 Lemma Sorted_leb_In_leb
   : forall a l x, Sorted_leb (a :: l) -> In x l -> event_leb a x = true.
@@ -454,8 +697,6 @@ Fixpoint apply_events (sorted : list event) (acc : list event) : list event :=
     Equivalence is established via the shared semantic spec: both
     satisfy apply_events_spec / apply_events_map_spec, so their
     outputs are identical after sorting (by sort_unique). *)
-
-Module IdMap := FMapAVL.Make(Nat_as_OT).
 
 (** Shorthand to avoid elt-inference failures. *)
 Definition IdMap_In (id : nat) (m : IdMap.t event) : Prop :=
@@ -1181,6 +1422,60 @@ Definition detect_gaps (stream : list event) : list nat :=
   let output_ids := ids_of (canonicalize stream) in
   filter (fun id => negb (mem_nat id output_ids)) input_ids.
 
+End Parameterized.
+
+(** * Nat-payload instantiation for worked examples and extraction. *)
+
+Definition nat_payload_compare := Nat.compare.
+Definition nat_payload_eqb := Nat.eqb.
+
+Lemma nat_payload_compare_refl : forall p, Nat.compare p p = Eq.
+Proof. intro. apply Nat.compare_refl. Qed.
+
+Lemma nat_payload_compare_antisym
+  : forall p1 p2, Nat.compare p1 p2 = CompOpp (Nat.compare p2 p1).
+Proof. intros. apply Nat.compare_antisym. Qed.
+
+Lemma nat_payload_compare_eq
+  : forall p1 p2, Nat.compare p1 p2 = Eq -> p1 = p2.
+Proof. intros. apply Nat.compare_eq_iff. exact H. Qed.
+
+Lemma nat_payload_compare_not_gt_trans
+  : forall p1 p2 p3,
+    Nat.compare p1 p2 <> Gt ->
+    Nat.compare p2 p3 <> Gt ->
+    Nat.compare p1 p3 <> Gt.
+Proof.
+  intros p1 p2 p3 H1 H2 H3.
+  destruct (Nat.compare p1 p2) eqn:E1; [ | | exfalso; apply H1; reflexivity ].
+  - apply Nat.compare_eq_iff in E1. subst p2. apply H2. exact H3.
+  - destruct (Nat.compare p2 p3) eqn:E2; [ | | exfalso; apply H2; reflexivity ].
+    + apply Nat.compare_eq_iff in E2. subst p3. rewrite E1 in H3. discriminate.
+    + rewrite Nat.compare_lt_iff in E1.
+      rewrite Nat.compare_lt_iff in E2.
+      rewrite Nat.compare_gt_iff in H3.
+      lia.
+Qed.
+
+Lemma nat_payload_eqb_spec
+  : forall p1 p2, reflect (p1 = p2) (Nat.eqb p1 p2).
+Proof. intros. apply Nat.eqb_spec. Qed.
+
+(** Convenience aliases for the nat-instantiated definitions. *)
+
+Notation nat_event := (event nat).
+Notation nat_canonicalize := (canonicalize nat Nat.compare).
+Notation nat_fold_stream := (fold_stream nat Nat.compare).
+Notation nat_sort_events := (sort_events nat Nat.compare).
+Notation nat_apply_events := (apply_events nat).
+Notation nat_process_one := (process_one nat).
+Notation nat_event_leb := (event_leb nat Nat.compare).
+Notation nat_event_eqb := (event_eqb nat Nat.compare Nat.eqb).
+Notation nat_detect_gaps := (detect_gaps nat Nat.compare).
+Notation nat_replace_or_add_map := (replace_or_add_map nat).
+Notation nat_apply_events_map := (apply_events_map nat).
+Notation nat_map_values := (map_values nat).
+
 (** * Worked examples: real-world canonicalization scenarios.
 
     All examples use small natural numbers to stay within Coq's unary
@@ -1193,9 +1488,9 @@ Definition detect_gaps (stream : list event) : list nat :=
 
 (** Notational convenience. *)
 
-Definition orig  id ts sq pl := mkEvent id ts sq pl Original.
-Definition corr  id ts sq pl := mkEvent id ts sq pl Correction.
-Definition cancl id ts sq    := mkEvent id ts sq 0  Cancel.
+Definition orig  id ts sq pl := @mkEvent nat id ts sq pl Original.
+Definition corr  id ts sq pl := @mkEvent nat id ts sq pl Correction.
+Definition cancl id ts sq    := @mkEvent nat id ts sq 0  Cancel.
 
 (** ** I. Equity trading desk — flash-crash replay.
 
@@ -1209,7 +1504,7 @@ Definition cancl id ts sq    := mkEvent id ts sq 0  Cancel.
     microsecond offsets from market open (10-50); payloads encode
     price in hundredths (e.g. 523 = $5.23). *)
 
-Definition flash_crash_raw : list event :=
+Definition flash_crash_raw : list nat_event :=
   [ orig  11 10 0 523    (* AAPL fill 100 @ 5.23, venue A *)
   ; orig  12 20 0 817    (* MSFT fill  50 @ 8.17, venue B *)
   ; orig  13 15 0 519    (* AAPL fill 200 @ 5.19, venue C *)
@@ -1225,15 +1520,15 @@ Definition flash_crash_raw : list event :=
     vanish; corrections to 11 and 14 replace the originals; five raw
     executions reduce to four priced fills in strict time order. *)
 
-Eval compute in (canonicalize flash_crash_raw).
+Eval compute in (nat_canonicalize flash_crash_raw).
 
-Eval compute in (detect_gaps flash_crash_raw).
+Eval compute in (nat_detect_gaps flash_crash_raw).
 (* = [13]  — the busted fill. *)
 
 (** Idempotence: the desk can safely re-ingest its own output. *)
 
 Example flash_crash_idempotent
-  : canonicalize (canonicalize flash_crash_raw) = canonicalize flash_crash_raw.
+  : nat_canonicalize (nat_canonicalize flash_crash_raw) = nat_canonicalize flash_crash_raw.
 Proof. native_compute. reflexivity. Qed.
 
 (** ** II. IoT sensor mesh — industrial cooling loop.
@@ -1247,7 +1542,7 @@ Proof. native_compute. reflexivity. Qed.
     within the window (100, 105); payloads are decidegrees Celsius
     (372 = 37.2 C). *)
 
-Definition cooling_loop_raw : list event :=
+Definition cooling_loop_raw : list nat_event :=
   [ orig  41 100 0 372    (* sensor 41: 37.2 C *)
   ; orig  42 100 0 384    (* sensor 42: 38.4 C *)
   ; orig  43 100 0 291    (* sensor 43: 29.1 C *)
@@ -1263,14 +1558,14 @@ Definition cooling_loop_raw : list event :=
 (** Canonical telemetry: sensor 43 vanishes, sensor 42's first
     reading is corrected, stale retransmit from 41 is absorbed. *)
 
-Eval compute in (canonicalize cooling_loop_raw).
+Eval compute in (nat_canonicalize cooling_loop_raw).
 
-Eval compute in (detect_gaps cooling_loop_raw).
+Eval compute in (nat_detect_gaps cooling_loop_raw).
 (* = [43]  — the decommissioned sensor. *)
 
 Example cooling_loop_deterministic :
   let reversed := rev cooling_loop_raw in
-  canonicalize reversed = canonicalize cooling_loop_raw.
+  nat_canonicalize reversed = nat_canonicalize cooling_loop_raw.
 Proof. native_compute. reflexivity. Qed.
 
 (** ** III. Regulatory trade reporting — MiFID II amendment chain.
@@ -1286,7 +1581,7 @@ Proof. native_compute. reflexivity. Qed.
     seconds since midnight (200-204); payloads are notional in
     cents (e.g. 950 = $9.50). *)
 
-Definition mifid_raw : list event :=
+Definition mifid_raw : list nat_event :=
   [ orig  51 200 0 950    (* trade A: notional 9.50 *)
   ; orig  52 201 0 525    (* trade B: notional 5.25 *)
   ; orig  53 202 0 750    (* trade C: notional 7.50 *)
@@ -1300,17 +1595,17 @@ Definition mifid_raw : list event :=
   ; corr  51 200 1 975    (* duplicate amendment A *)
   ].
 
-Eval compute in (canonicalize mifid_raw).
+Eval compute in (nat_canonicalize mifid_raw).
 (* Four trades survive: 51 (amended), 52, 54 (second amend wins), 55.
    Trade 53 is cancelled. *)
 
-Eval compute in (detect_gaps mifid_raw).
+Eval compute in (nat_detect_gaps mifid_raw).
 (* = [53]  — the erroneous trade. *)
 
 (** The regulator re-ingests the golden record; nothing changes. *)
 
 Example mifid_idempotent
-  : canonicalize (canonicalize mifid_raw) = canonicalize mifid_raw.
+  : nat_canonicalize (nat_canonicalize mifid_raw) = nat_canonicalize mifid_raw.
 Proof. native_compute. reflexivity. Qed.
 
 (** ** IV. Distributed event sourcing — order lifecycle.
@@ -1324,7 +1619,7 @@ Proof. native_compute. reflexivity. Qed.
     logical clock ticks (10-80); payloads encode price in cents
     where relevant (499 = $4.99). *)
 
-Definition order_lifecycle_raw : list event :=
+Definition order_lifecycle_raw : list nat_event :=
   [ orig  61 10 0 499    (* order placed: $4.99 *)
   ; orig  62 11 0 0      (* payment authorized *)
   ; orig  63 12 0 499    (* inventory reserved *)
@@ -1340,15 +1635,15 @@ Definition order_lifecycle_raw : list event :=
   ; orig  68 30 0 0      (* delivered *)
   ].
 
-Eval compute in (canonicalize order_lifecycle_raw).
+Eval compute in (nat_canonicalize order_lifecycle_raw).
 (* Full lifecycle minus the released reservation, deduped,
    with the coupon price and regenerated label. *)
 
-Eval compute in (detect_gaps order_lifecycle_raw).
+Eval compute in (nat_detect_gaps order_lifecycle_raw).
 (* = [63]  — the released inventory hold. *)
 
 Example order_lifecycle_online_batch :
-  fold_stream order_lifecycle_raw = canonicalize order_lifecycle_raw.
+  nat_fold_stream order_lifecycle_raw = nat_canonicalize order_lifecycle_raw.
 Proof. native_compute. reflexivity. Qed.
 
 (** ** V. High-frequency market data — depth-of-book reconstruction.
@@ -1363,7 +1658,7 @@ Proof. native_compute. reflexivity. Qed.
     offsets (1-11); payloads encode price in hundredths
     (e.g. 525 = $5.25). *)
 
-Definition orderbook_raw : list event :=
+Definition orderbook_raw : list nat_event :=
   [ orig  1 1 0 525     (* A: bid 5.25 *)
   ; orig  2 2 0 530     (* B: ask 5.30 *)
   ; orig  3 3 0 520     (* A: bid 5.20 *)
@@ -1381,11 +1676,11 @@ Definition orderbook_raw : list event :=
   ; orig  9 11 0 527    (* A: new bid 5.27 — replenish *)
   ].
 
-Eval compute in (canonicalize orderbook_raw).
+Eval compute in (nat_canonicalize orderbook_raw).
 (* Surviving resting orders: 1 (amended), 2 (tightened),
    5, 7, 8, 9.  Pulled orders 3, 4, 6 vanish. *)
 
-Eval compute in (detect_gaps orderbook_raw).
+Eval compute in (nat_detect_gaps orderbook_raw).
 (* = [3; 4; 6]  — the three pulled orders. *)
 
 (** Shuffling the consolidated tape must produce the same book. *)
@@ -1408,7 +1703,7 @@ Example orderbook_deterministic :
     ; orig  9 11 0 527
     ; orig  2 2 0 530
     ] in
-  canonicalize alt_order = canonicalize orderbook_raw.
+  nat_canonicalize alt_order = nat_canonicalize orderbook_raw.
 Proof. native_compute. reflexivity. Qed.
 
 (** ** VI. Clinical trial data — adverse event reconciliation.
@@ -1421,7 +1716,7 @@ Proof. native_compute. reflexivity. Qed.
     day numbers (1-7); payloads encode MedDRA preferred-term codes
     truncated to last three digits (e.g. 211 for PT 10019211). *)
 
-Definition clinical_raw : list event :=
+Definition clinical_raw : list nat_event :=
   [ orig  31 1 0 100    (* site 1: headache, PT ...100 *)
   ; orig  32 2 0 813    (* site 2: nausea, PT ...813 *)
   ; orig  33 3 0 700    (* site 3: vomiting, PT ...700 *)
@@ -1436,16 +1731,16 @@ Definition clinical_raw : list event :=
   ; orig  37 7 0 558    (* site 3: fatigue, PT ...558 *)
   ].
 
-Eval compute in (canonicalize clinical_raw).
+Eval compute in (nat_canonicalize clinical_raw).
 (* Six reports survive: 31 (recoded to migraine), 32 (recoded),
    34 (diarrhea), 35 (rash), 36 (anaphylaxis), 37 (fatigue).
    Report 33 (pre-existing vomiting) is retracted. *)
 
-Eval compute in (detect_gaps clinical_raw).
+Eval compute in (nat_detect_gaps clinical_raw).
 (* = [33]  — the retracted report. *)
 
 Example clinical_idempotent
-  : canonicalize (canonicalize clinical_raw) = canonicalize clinical_raw.
+  : nat_canonicalize (nat_canonicalize clinical_raw) = nat_canonicalize clinical_raw.
 Proof. native_compute. reflexivity. Qed.
 
 (** ** VII. Satellite telemetry — LEO constellation housekeeping.
@@ -1459,7 +1754,7 @@ Proof. native_compute. reflexivity. Qed.
     numbers (1-30); payloads encode battery voltage in hundredths
     of a volt (e.g. 812 = 8.12 V). *)
 
-Definition satellite_raw : list event :=
+Definition satellite_raw : list nat_event :=
   [ orig  71 1 0 812    (* sat-A: battery 8.12 V *)
   ; orig  72 2 0 795    (* sat-B: battery 7.95 V *)
   ; orig  73 3 0 831    (* sat-C: battery 8.31 V *)
@@ -1475,17 +1770,17 @@ Definition satellite_raw : list event :=
   ; orig  72 2 0 795    (* another stale replay, sat-B *)
   ].
 
-Eval compute in (canonicalize satellite_raw).
+Eval compute in (nat_canonicalize satellite_raw).
 (* Seven frames survive (sat-D's deorbited frame is gone).
    Sat-A's first frame is corrected; sat-B's is recalibrated.
    Duplicates from store-and-forward are absorbed. *)
 
-Eval compute in (detect_gaps satellite_raw).
+Eval compute in (nat_detect_gaps satellite_raw).
 (* = [74]  — the deorbited satellite's frame. *)
 
 Example satellite_triple_idempotent :
-  let c := canonicalize satellite_raw in
-  canonicalize (canonicalize c) = c.
+  let c := nat_canonicalize satellite_raw in
+  nat_canonicalize (nat_canonicalize c) = c.
 Proof. native_compute. reflexivity. Qed.
 
 (** * Extraction. *)
