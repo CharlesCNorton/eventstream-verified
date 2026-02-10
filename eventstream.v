@@ -1054,6 +1054,313 @@ Definition detect_gaps (stream : list event) : list nat :=
   let output_ids := ids_of (canonicalize stream) in
   filter (fun id => negb (mem_nat id output_ids)) input_ids.
 
+(** * Worked examples: real-world canonicalization scenarios.
+
+    All examples use small natural numbers to stay within Coq's unary
+    nat representation.  Each scenario documents the real-world encoding:
+    what the ids, timestamps, and payloads represent in the domain.
+    The canonicalizer is domain-agnostic; the examples exist to show
+    that the algebraic properties (determinism, idempotence, no cancel
+    leakage, unique ids, online-batch equivalence) hold on realistic
+    event topologies — not just unit-test-sized inputs. *)
+
+(** Notational convenience. *)
+
+Definition orig  id ts sq pl := mkEvent id ts sq pl Original.
+Definition corr  id ts sq pl := mkEvent id ts sq pl Correction.
+Definition cancl id ts sq    := mkEvent id ts sq 0  Cancel.
+
+(** ** I. Equity trading desk — flash-crash replay.
+
+    A burst of executions arrives out of order from three venues
+    during a flash crash.  Two fills are amended (price improvement
+    from the matching engine), one is busted entirely by the exchange.
+    The canonical stream must reconstruct the true position regardless
+    of wire ordering.
+
+    Encoding: ids are execution ids (11-15); timestamps are
+    microsecond offsets from market open (10-50); payloads encode
+    price in hundredths (e.g. 523 = $5.23). *)
+
+Definition flash_crash_raw : list event :=
+  [ orig  11 10 0 523    (* AAPL fill 100 @ 5.23, venue A *)
+  ; orig  12 20 0 817    (* MSFT fill  50 @ 8.17, venue B *)
+  ; orig  13 15 0 519    (* AAPL fill 200 @ 5.19, venue C *)
+  ; corr  11 10 1 525    (* venue A amends: price was 5.25 *)
+  ; orig  14 30 0 811    (* MSFT fill 100 @ 8.11, venue A *)
+  ; cancl 13 15 1        (* venue C busts the 200-lot *)
+  ; orig  12 20 0 817    (* duplicate wire — venue B retransmit *)
+  ; corr  14 30 1 813    (* venue A amends: price was 8.13 *)
+  ; orig  15 50 0 530    (* AAPL fill 300 @ 5.30, venue B *)
+  ].
+
+(** After canonicalization the busted fill (13) and the duplicate (12)
+    vanish; corrections to 11 and 14 replace the originals; five raw
+    executions reduce to four priced fills in strict time order. *)
+
+Eval compute in (canonicalize flash_crash_raw).
+
+Eval compute in (detect_gaps flash_crash_raw).
+(* = [13]  — the busted fill. *)
+
+(** Idempotence: the desk can safely re-ingest its own output. *)
+
+Example flash_crash_idempotent
+  : canonicalize (canonicalize flash_crash_raw) = canonicalize flash_crash_raw.
+Proof. native_compute. reflexivity. Qed.
+
+(** ** II. IoT sensor mesh — industrial cooling loop.
+
+    Four temperature sensors report every 5 seconds.  Sensor 42
+    drifts and sends a correction; sensor 43 is decommissioned
+    mid-window and its readings are cancelled; sensor 41 transmits
+    a stale duplicate over a flaky LoRa link.
+
+    Encoding: ids are sensor ids (41-44); timestamps are seconds
+    within the window (100, 105); payloads are decidegrees Celsius
+    (372 = 37.2 C). *)
+
+Definition cooling_loop_raw : list event :=
+  [ orig  41 100 0 372    (* sensor 41: 37.2 C *)
+  ; orig  42 100 0 384    (* sensor 42: 38.4 C *)
+  ; orig  43 100 0 291    (* sensor 43: 29.1 C *)
+  ; orig  44 100 0 310    (* sensor 44: 31.0 C *)
+  ; orig  41 105 1 373    (* sensor 41: 37.3 C, next cycle *)
+  ; corr  42 100 1 381    (* sensor 42 recalibrates: was 38.1 C *)
+  ; orig  41 100 0 372    (* stale retransmit from sensor 41 *)
+  ; cancl 43 100 1        (* sensor 43 decommissioned *)
+  ; orig  42 105 2 382    (* sensor 42: 38.2 C, next cycle *)
+  ; orig  44 105 1 311    (* sensor 44: 31.1 C, next cycle *)
+  ].
+
+(** Canonical telemetry: sensor 43 vanishes, sensor 42's first
+    reading is corrected, stale retransmit from 41 is absorbed. *)
+
+Eval compute in (canonicalize cooling_loop_raw).
+
+Eval compute in (detect_gaps cooling_loop_raw).
+(* = [43]  — the decommissioned sensor. *)
+
+Example cooling_loop_deterministic :
+  let reversed := rev cooling_loop_raw in
+  canonicalize reversed = canonicalize cooling_loop_raw.
+Proof. native_compute. reflexivity. Qed.
+
+(** ** III. Regulatory trade reporting — MiFID II amendment chain.
+
+    A broker reports five trades to the ARM (Approved Reporting
+    Mechanism).  Two are amended for price; one is cancelled as
+    erroneous; a fourth is amended twice in succession (only the
+    latest amendment survives).  The regulator replays the feed
+    and must recover the identical golden record regardless of
+    message ordering or duplication.
+
+    Encoding: ids are trade report ids (51-55); timestamps are
+    seconds since midnight (200-204); payloads are notional in
+    cents (e.g. 950 = $9.50). *)
+
+Definition mifid_raw : list event :=
+  [ orig  51 200 0 950    (* trade A: notional 9.50 *)
+  ; orig  52 201 0 525    (* trade B: notional 5.25 *)
+  ; orig  53 202 0 750    (* trade C: notional 7.50 *)
+  ; orig  54 203 0 120    (* trade D: notional 1.20 *)
+  ; orig  55 204 0 300    (* trade E: notional 3.00 *)
+  ; corr  51 200 1 975    (* amend A: notional 9.75 *)
+  ; cancl 53 202 1        (* cancel C: erroneous *)
+  ; corr  54 203 1 195    (* amend D first: 1.95 *)
+  ; corr  54 203 2 198    (* amend D second: 1.98 *)
+  ; orig  52 201 0 525    (* duplicate B from backup feed *)
+  ; corr  51 200 1 975    (* duplicate amendment A *)
+  ].
+
+Eval compute in (canonicalize mifid_raw).
+(* Four trades survive: 51 (amended), 52, 54 (second amend wins), 55.
+   Trade 53 is cancelled. *)
+
+Eval compute in (detect_gaps mifid_raw).
+(* = [53]  — the erroneous trade. *)
+
+(** The regulator re-ingests the golden record; nothing changes. *)
+
+Example mifid_idempotent
+  : canonicalize (canonicalize mifid_raw) = canonicalize mifid_raw.
+Proof. native_compute. reflexivity. Qed.
+
+(** ** IV. Distributed event sourcing — order lifecycle.
+
+    An e-commerce system models each order as a stream of domain
+    events.  Microservices emit events independently; network
+    partitions cause duplicates and reordering.  The read-side
+    projection must converge to a single truth.
+
+    Encoding: ids are order-event ids (61-68); timestamps are
+    logical clock ticks (10-80); payloads encode price in cents
+    where relevant (499 = $4.99). *)
+
+Definition order_lifecycle_raw : list event :=
+  [ orig  61 10 0 499    (* order placed: $4.99 *)
+  ; orig  62 11 0 0      (* payment authorized *)
+  ; orig  63 12 0 499    (* inventory reserved *)
+  ; corr  61 10 1 449    (* price adjustment: $4.49, coupon applied *)
+  ; orig  64 13 0 0      (* shipment label created *)
+  ; cancl 63 12 1        (* inventory reservation released — out of stock *)
+  ; orig  65 14 0 0      (* backorder placed *)
+  ; orig  63 12 0 499    (* stale retry from inventory service *)
+  ; orig  66 20 0 449    (* inventory re-reserved at new price *)
+  ; corr  64 13 1 0      (* shipment label regenerated for new warehouse *)
+  ; orig  62 11 0 0      (* duplicate payment auth from retry queue *)
+  ; orig  67 21 0 0      (* shipped *)
+  ; orig  68 30 0 0      (* delivered *)
+  ].
+
+Eval compute in (canonicalize order_lifecycle_raw).
+(* Full lifecycle minus the released reservation, deduped,
+   with the coupon price and regenerated label. *)
+
+Eval compute in (detect_gaps order_lifecycle_raw).
+(* = [63]  — the released inventory hold. *)
+
+Example order_lifecycle_online_batch :
+  fold_stream order_lifecycle_raw = canonicalize order_lifecycle_raw.
+Proof. native_compute. reflexivity. Qed.
+
+(** ** V. High-frequency market data — depth-of-book reconstruction.
+
+    A consolidated feed carries order-book updates from two exchanges
+    (odd ids = exchange A, even ids = exchange B).  Orders are placed,
+    amended, and cancelled in rapid succession.  The canonical book
+    is the input to a fair-value model that must be deterministic
+    across replays regardless of interleaving.
+
+    Encoding: ids are order ids (1-9); timestamps are nanosecond
+    offsets (1-11); payloads encode price in hundredths
+    (e.g. 525 = $5.25). *)
+
+Definition orderbook_raw : list event :=
+  [ orig  1 1 0 525     (* A: bid 5.25 *)
+  ; orig  2 2 0 530     (* B: ask 5.30 *)
+  ; orig  3 3 0 520     (* A: bid 5.20 *)
+  ; orig  4 4 0 535     (* B: ask 5.35 *)
+  ; corr  1 1 1 526     (* A amends bid to 5.26 *)
+  ; orig  5 6 0 518     (* A: bid 5.18 *)
+  ; cancl 3 3 1         (* A pulls bid 5.20 *)
+  ; orig  6 7 0 532     (* B: ask 5.32 *)
+  ; cancl 4 4 1         (* B pulls ask 5.35 *)
+  ; corr  2 2 1 529     (* B tightens ask to 5.29 *)
+  ; orig  7 9 0 527     (* A: bid 5.27 *)
+  ; cancl 6 7 1         (* B pulls ask 5.32 *)
+  ; orig  8 10 0 528    (* B: ask 5.28 — crosses with 7! *)
+  ; orig  2 2 0 530     (* stale retransmit from B *)
+  ; orig  9 11 0 527    (* A: new bid 5.27 — replenish *)
+  ].
+
+Eval compute in (canonicalize orderbook_raw).
+(* Surviving resting orders: 1 (amended), 2 (tightened),
+   5, 7, 8, 9.  Pulled orders 3, 4, 6 vanish. *)
+
+Eval compute in (detect_gaps orderbook_raw).
+(* = [3; 4; 6]  — the three pulled orders. *)
+
+(** Shuffling the consolidated tape must produce the same book. *)
+
+Example orderbook_deterministic :
+  let alt_order :=
+    [ orig  8 10 0 528
+    ; cancl 4 4 1
+    ; orig  5 6 0 518
+    ; orig  2 2 0 530
+    ; cancl 6 7 1
+    ; orig  1 1 0 525
+    ; corr  2 2 1 529
+    ; orig  7 9 0 527
+    ; orig  3 3 0 520
+    ; cancl 3 3 1
+    ; corr  1 1 1 526
+    ; orig  4 4 0 535
+    ; orig  6 7 0 532
+    ; orig  9 11 0 527
+    ; orig  2 2 0 530
+    ] in
+  canonicalize alt_order = canonicalize orderbook_raw.
+Proof. native_compute. reflexivity. Qed.
+
+(** ** VI. Clinical trial data — adverse event reconciliation.
+
+    A multi-site pharmaceutical trial collects adverse-event reports.
+    Sites submit, amend, and retract reports; the sponsor must produce
+    a single reconciled safety database for regulatory submission.
+
+    Encoding: ids are report ids (31-37); timestamps are study
+    day numbers (1-7); payloads encode MedDRA preferred-term codes
+    truncated to last three digits (e.g. 211 for PT 10019211). *)
+
+Definition clinical_raw : list event :=
+  [ orig  31 1 0 100    (* site 1: headache, PT ...100 *)
+  ; orig  32 2 0 813    (* site 2: nausea, PT ...813 *)
+  ; orig  33 3 0 700    (* site 3: vomiting, PT ...700 *)
+  ; orig  34 4 0 378    (* site 1: diarrhea, PT ...378 *)
+  ; corr  31 1 1 211    (* site 1 recodes: migraine, PT ...211 *)
+  ; orig  35 5 0 844    (* site 2: rash, PT ...844 *)
+  ; cancl 33 3 1        (* site 3 retracts: was pre-existing *)
+  ; orig  33 3 0 700    (* stale retransmit from site 3 EDC *)
+  ; corr  32 2 1 836    (* site 2 recodes: nausea aggravated *)
+  ; orig  36 6 0 199    (* site 1: anaphylaxis — serious AE *)
+  ; corr  31 1 2 211    (* duplicate correction from audit *)
+  ; orig  37 7 0 558    (* site 3: fatigue, PT ...558 *)
+  ].
+
+Eval compute in (canonicalize clinical_raw).
+(* Six reports survive: 31 (recoded to migraine), 32 (recoded),
+   34 (diarrhea), 35 (rash), 36 (anaphylaxis), 37 (fatigue).
+   Report 33 (pre-existing vomiting) is retracted. *)
+
+Eval compute in (detect_gaps clinical_raw).
+(* = [33]  — the retracted report. *)
+
+Example clinical_idempotent
+  : canonicalize (canonicalize clinical_raw) = canonicalize clinical_raw.
+Proof. native_compute. reflexivity. Qed.
+
+(** ** VII. Satellite telemetry — LEO constellation housekeeping.
+
+    A ground station ingests housekeeping frames from a constellation
+    of four LEO satellites.  Frames arrive out of order due to
+    store-and-forward; two are superseded by on-board corrections;
+    one satellite is deorbited and its final telemetry is cancelled.
+
+    Encoding: ids are frame ids (71-78); timestamps are pass
+    numbers (1-30); payloads encode battery voltage in hundredths
+    of a volt (e.g. 812 = 8.12 V). *)
+
+Definition satellite_raw : list event :=
+  [ orig  71 1 0 812    (* sat-A: battery 8.12 V *)
+  ; orig  72 2 0 795    (* sat-B: battery 7.95 V *)
+  ; orig  73 3 0 831    (* sat-C: battery 8.31 V *)
+  ; orig  74 4 0 764    (* sat-D: battery 7.64 V *)
+  ; corr  71 1 1 810    (* sat-A on-board recal: 8.10 V *)
+  ; orig  75 10 0 808   (* sat-A: next pass, 8.08 V *)
+  ; orig  76 12 0 791   (* sat-B: next pass, 7.91 V *)
+  ; cancl 74 4 1        (* sat-D deorbited — discard frame *)
+  ; orig  77 11 0 829   (* sat-C: next pass, 8.29 V *)
+  ; corr  72 2 1 797    (* sat-B ground recal: 7.97 V *)
+  ; orig  73 3 0 831    (* stale replay from store-and-forward *)
+  ; orig  78 20 0 805   (* sat-A: third pass, 8.05 V *)
+  ; orig  72 2 0 795    (* another stale replay, sat-B *)
+  ].
+
+Eval compute in (canonicalize satellite_raw).
+(* Seven frames survive (sat-D's deorbited frame is gone).
+   Sat-A's first frame is corrected; sat-B's is recalibrated.
+   Duplicates from store-and-forward are absorbed. *)
+
+Eval compute in (detect_gaps satellite_raw).
+(* = [74]  — the deorbited satellite's frame. *)
+
+Example satellite_triple_idempotent :
+  let c := canonicalize satellite_raw in
+  canonicalize (canonicalize c) = c.
+Proof. native_compute. reflexivity. Qed.
+
 (** * Extraction. *)
 
 Require Import Extraction.
