@@ -19,8 +19,8 @@
 (*     License: Proprietary — All Rights Reserved                             *)
 (*                                                                            *)
 (*     Note on extraction: nat is mapped to OCaml int via ExtrOcamlNatInt.    *)
-(*     Sort is Coq.Sorting.Mergesort (O(n log n)); proofs connect through    *)
-(*     a bridge from LocallySorted to the local Sorted_leb predicate.        *)
+(*     Sort is bottom-up mergesort (O(n log n)) defined as direct fixpoints  *)
+(*     inside the Section to avoid Module/Section incompatibility.           *)
 (*                                                                            *)
 (******************************************************************************)
 
@@ -248,6 +248,10 @@ Hypothesis cancel_handler_NoDup
   : forall e acc, NoDup (map ev_id acc) -> NoDup (map ev_id (cancel_handler e acc)).
 Hypothesis cancel_handler_ids_incl
   : forall e acc, incl (map ev_id (cancel_handler e acc)) (map ev_id acc).
+Hypothesis cancel_handler_preserves_event
+  : forall e acc x,
+    ev_id e <> ev_id x ->
+    In x (cancel_handler e acc) <-> In x acc.
 
 (** * Abstract map keyed by Key, used for the map-based accumulator.
     Concrete implementations (e.g. AVL via FMapAVL) are supplied
@@ -270,6 +274,22 @@ Hypothesis kmap_remove_not_In
   : forall k m, ~ kmap_In k (kmap_remove k m).
 Hypothesis kmap_remove_In_other
   : forall k k' m, k' <> k -> (kmap_In k' (kmap_remove k m) <-> kmap_In k' m).
+
+Variable kmap_empty : KMap.
+Hypothesis kmap_find_empty
+  : forall k, kmap_find k kmap_empty = None.
+Hypothesis kmap_find_add_same
+  : forall k v m, kmap_find k (kmap_add k v m) = Some v.
+Hypothesis kmap_find_add_other
+  : forall k k' v m, k <> k' -> kmap_find k' (kmap_add k v m) = kmap_find k' m.
+Hypothesis kmap_find_remove_same
+  : forall k m, kmap_find k (kmap_remove k m) = None.
+Hypothesis kmap_find_remove_other
+  : forall k k' m, k' <> k -> kmap_find k' (kmap_remove k m) = kmap_find k' m.
+Hypothesis kmap_elements_correct
+  : forall k v m, In (k, v) (kmap_elements m) <-> kmap_find k m = Some v.
+Hypothesis kmap_elements_NoDup
+  : forall m, NoDup (map fst (kmap_elements m)).
 
 (** * Decidable equality. *)
 
@@ -547,22 +567,49 @@ Proof.
   - exact H13.
 Qed.
 
-(** * Insertion sort on events.
-    Defined directly to avoid Module/Section incompatibility. *)
+(** * Mergesort on events.
+    Bottom-up mergesort via a stack of sorted runs, following the
+    algorithm of Coq.Sorting.Mergesort.  Defined directly as fixpoints
+    to avoid Module/Section incompatibility. *)
 
-Fixpoint insert (e : event) (l : list event) : list event :=
-  match l with
-  | [] => [e]
-  | h :: t =>
-    if event_leb e h then e :: h :: t
-    else h :: insert e t
+Fixpoint merge (l1 : list event) : list event -> list event :=
+  match l1 with
+  | [] => fun l2 => l2
+  | a1 :: l1' =>
+    fix merge_aux (l2 : list event) : list event :=
+      match l2 with
+      | [] => a1 :: l1'
+      | a2 :: l2' =>
+        if event_leb a1 a2 then a1 :: merge l1' (a2 :: l2')
+        else a2 :: merge_aux l2'
+      end
   end.
 
-Fixpoint sort_events (l : list event) : list event :=
-  match l with
+Fixpoint merge_list_to_stack (stack : list (option (list event)))
+    (l : list event) : list (option (list event)) :=
+  match stack with
+  | [] => [Some l]
+  | None :: stack' => Some l :: stack'
+  | Some l' :: stack' => None :: merge_list_to_stack stack' (merge l' l)
+  end.
+
+Fixpoint merge_stack (stack : list (option (list event)))
+    : list event :=
+  match stack with
   | [] => []
-  | h :: t => insert h (sort_events t)
+  | None :: stack' => merge_stack stack'
+  | Some l :: stack' => merge l (merge_stack stack')
   end.
+
+Fixpoint iter_merge (stack : list (option (list event)))
+    (l : list event) : list event :=
+  match l with
+  | [] => merge_stack stack
+  | a :: l' => iter_merge (merge_list_to_stack stack [a]) l'
+  end.
+
+Definition sort_events (l : list event) : list event :=
+  iter_merge [] l.
 
 (** * Sort correctness: output is a sorted permutation. *)
 
@@ -588,62 +635,179 @@ Proof.
   intros e1 e2 l Hs. inversion Hs; subst. assumption.
 Defined.
 
-Lemma insert_perm
-  : forall e l, Permutation (e :: l) (insert e l).
+Lemma Sorted_leb_from_head_sorted
+  : forall a l,
+    (match l with [] => True | h :: _ => event_leb a h = true end) ->
+    Sorted_leb l ->
+    Sorted_leb (a :: l).
 Proof.
-  intros e l. induction l as [| h t IH]; simpl.
+  intros a [| h t] Hh Hs.
+  - apply Sorted_leb_one.
+  - apply Sorted_leb_cons; assumption.
+Defined.
+
+(** ** Merge correctness. *)
+
+Lemma merge_perm
+  : forall l1 l2, Permutation (l1 ++ l2) (merge l1 l2).
+Proof.
+  induction l1 as [| a1 l1' IH1]; simpl; intro l2.
   - apply Permutation_refl.
-  - destruct (event_leb e h).
-    + apply Permutation_refl.
-    + apply Permutation_trans with (h :: e :: t).
-      * apply perm_swap.
-      * apply perm_skip. exact IH.
+  - induction l2 as [| a2 l2' IH2]; simpl.
+    + rewrite app_nil_r. apply Permutation_refl.
+    + destruct (event_leb a1 a2) eqn:Hleb.
+      * apply perm_skip. apply IH1.
+      * eapply Permutation_trans.
+        -- exact (Permutation_sym (Permutation_middle (a1 :: l1') l2' a2)).
+        -- apply perm_skip. exact IH2.
+Defined.
+
+Lemma merge_head_leb
+  : forall l1 l2 a,
+    (match l1 with [] => True | h :: _ => event_leb a h = true end) ->
+    (match l2 with [] => True | h :: _ => event_leb a h = true end) ->
+    match merge l1 l2 with [] => True | h :: _ => event_leb a h = true end.
+Proof.
+  intros [| a1 l1']; simpl.
+  - intros l2 a _ H. exact H.
+  - intros [| a2 l2'] a H1 H2; simpl.
+    + exact H1.
+    + destruct (event_leb a1 a2); [exact H1 | exact H2].
+Defined.
+
+Lemma merge_sorted
+  : forall l1 l2,
+    Sorted_leb l1 -> Sorted_leb l2 -> Sorted_leb (merge l1 l2).
+Proof.
+  induction l1 as [| a1 l1' IH1]; simpl; intros l2 Hs1 Hs2.
+  - exact Hs2.
+  - revert Hs2. induction l2 as [| a2 l2' IH2]; intro Hs2; simpl.
+    + exact Hs1.
+    + destruct (event_leb a1 a2) eqn:Hleb.
+      * apply Sorted_leb_from_head_sorted.
+        -- apply (merge_head_leb l1' (a2 :: l2') a1).
+           ++ destruct l1' as [| b1 l1''].
+              ** exact I.
+              ** exact (Sorted_leb_head_leb a1 b1 l1'' Hs1).
+           ++ simpl. exact Hleb.
+        -- apply IH1.
+           ++ exact (Sorted_leb_tail a1 l1' Hs1).
+           ++ exact Hs2.
+      * apply Sorted_leb_from_head_sorted.
+        -- apply (merge_head_leb (a1 :: l1') l2' a2).
+           ++ simpl. destruct (event_leb_total a1 a2) as [H | H].
+              ** rewrite H in Hleb. discriminate.
+              ** exact H.
+           ++ destruct l2' as [| b2 l2''].
+              ** exact I.
+              ** exact (Sorted_leb_head_leb a2 b2 l2'' Hs2).
+        -- apply IH2. exact (Sorted_leb_tail a2 l2' Hs2).
+Defined.
+
+(** ** Stack-based mergesort correctness. *)
+
+Definition flatten_stack (s : list (option (list event)))
+    : list event :=
+  flat_map (fun o => match o with Some l => l | None => [] end) s.
+
+Definition stack_sorted (s : list (option (list event)))
+    : Prop :=
+  forall l, In (Some l) s -> Sorted_leb l.
+
+Lemma merge_list_to_stack_perm
+  : forall s l,
+    Permutation (l ++ flatten_stack s)
+                (flatten_stack (merge_list_to_stack s l)).
+Proof.
+  induction s as [| [l' |] s' IH]; simpl; intro l.
+  - rewrite app_nil_r. apply Permutation_refl.
+  - eapply Permutation_trans; [| exact (IH (merge l' l))].
+    rewrite app_assoc.
+    apply Permutation_app_tail.
+    eapply Permutation_trans.
+    + apply Permutation_app_comm.
+    + apply merge_perm.
+  - apply Permutation_refl.
+Defined.
+
+Lemma merge_list_to_stack_sorted
+  : forall s l,
+    stack_sorted s -> Sorted_leb l ->
+    stack_sorted (merge_list_to_stack s l).
+Proof.
+  induction s as [| [l' |] s' IH]; simpl; intros l Hss Hsl.
+  - intros x [H | []]. injection H; intro; subst. exact Hsl.
+  - intros x Hin. simpl in Hin.
+    destruct Hin as [Habs | Hin]; [discriminate |].
+    assert (Hss' : stack_sorted s').
+    { intros y Hy. apply Hss. right. exact Hy. }
+    assert (Hsml : Sorted_leb (merge l' l)).
+    { apply merge_sorted; [apply Hss; left; reflexivity | exact Hsl]. }
+    exact (IH (merge l' l) Hss' Hsml x Hin).
+  - intros x [H | Hin].
+    + injection H; intro; subst. exact Hsl.
+    + apply Hss. right. exact Hin.
+Defined.
+
+Lemma merge_stack_perm
+  : forall s, Permutation (flatten_stack s) (merge_stack s).
+Proof.
+  induction s as [| [l |] s' IH]; simpl.
+  - apply Permutation_refl.
+  - eapply Permutation_trans.
+    + apply Permutation_app_head. exact IH.
+    + apply merge_perm.
+  - exact IH.
+Defined.
+
+Lemma merge_stack_sorted
+  : forall s, stack_sorted s -> Sorted_leb (merge_stack s).
+Proof.
+  induction s as [| [l |] s' IH]; simpl; intro Hss.
+  - apply Sorted_leb_nil.
+  - apply merge_sorted.
+    + apply Hss. left. reflexivity.
+    + apply IH. intros y Hy. apply Hss. right. exact Hy.
+  - apply IH. intros y Hy. apply Hss. right. exact Hy.
+Defined.
+
+Lemma iter_merge_perm
+  : forall l s,
+    Permutation (l ++ flatten_stack s) (iter_merge s l).
+Proof.
+  induction l as [| a l' IH]; simpl; intro s.
+  - apply merge_stack_perm.
+  - eapply Permutation_trans; [| exact (IH (merge_list_to_stack s [a]))].
+    eapply Permutation_trans.
+    + apply Permutation_middle.
+    + apply Permutation_app_head. exact (merge_list_to_stack_perm s [a]).
+Defined.
+
+Lemma iter_merge_sorted
+  : forall l s,
+    stack_sorted s -> Sorted_leb (iter_merge s l).
+Proof.
+  induction l as [| a l' IH]; simpl; intros s Hss.
+  - apply merge_stack_sorted. exact Hss.
+  - apply IH. apply merge_list_to_stack_sorted.
+    + exact Hss.
+    + apply Sorted_leb_one.
 Defined.
 
 Theorem sort_events_perm
   : forall l, Permutation l (sort_events l).
 Proof.
-  induction l as [| h t IH]; simpl.
-  - apply Permutation_refl.
-  - apply Permutation_trans with (h :: sort_events t).
-    + apply perm_skip. exact IH.
-    + apply insert_perm.
-Defined.
-
-Lemma insert_sorted
-  : forall e l, Sorted_leb l -> Sorted_leb (insert e l).
-Proof.
-  intros e l Hs. induction l as [| h t IH]; simpl.
-  - apply Sorted_leb_one.
-  - destruct (event_leb e h) eqn:Heh.
-    + apply Sorted_leb_cons; assumption.
-    + destruct t as [| h2 t']; simpl in *.
-      * destruct (event_leb_total e h) as [Hle | Hle].
-        -- rewrite Hle in Heh. discriminate.
-        -- apply Sorted_leb_cons. exact Hle. apply Sorted_leb_one.
-      * assert (Hhh2 : event_leb h h2 = true).
-        { exact (Sorted_leb_head_leb h h2 t' Hs). }
-        assert (Htail : Sorted_leb (h2 :: t')).
-        { exact (Sorted_leb_tail h (h2 :: t') Hs). }
-        specialize (IH Htail).
-        simpl in IH.
-        destruct (event_leb e h2) eqn:Heh2.
-        -- apply Sorted_leb_cons.
-           ++ destruct (event_leb_total e h) as [Hle | Hle].
-              ** rewrite Hle in Heh. discriminate.
-              ** exact Hle.
-           ++ apply Sorted_leb_cons; assumption.
-        -- apply Sorted_leb_cons.
-           ++ exact Hhh2.
-           ++ exact IH.
+  intro l. unfold sort_events.
+  rewrite <- (app_nil_r l) at 1.
+  exact (iter_merge_perm l []).
 Defined.
 
 Theorem sort_events_sorted
   : forall l, Sorted_leb (sort_events l).
 Proof.
-  induction l as [| h t IH]; simpl.
-  - apply Sorted_leb_nil.
-  - apply insert_sorted. exact IH.
+  intro l. unfold sort_events.
+  apply iter_merge_sorted.
+  intros x [].
 Defined.
 
 (** * Sort helpers. *)
@@ -901,6 +1065,80 @@ Proof.
            apply replace_or_add_map_other. exact Heq.
         -- rewrite apply_events_map_no_id_transparent by exact Hrest.
            apply remove_In_other. intro Hc. apply Heq. symmetry. exact Hc.
+Defined.
+
+(** * Map-list equivalence.
+    The list-based apply_events and the map-based apply_events_map
+    produce the same result when started from empty.  The bridge is a
+    pointwise invariant: for every key, kmap_find agrees with the
+    unique list entry (if any). *)
+
+Definition map_list_agree (acc : list event) (m : KMap) : Prop :=
+  NoDup (map ev_id acc) /\
+  (forall e, In e acc -> kmap_find (ev_id e) m = Some e) /\
+  (forall id e, kmap_find id m = Some e -> In e acc).
+
+Lemma map_list_agree_empty
+  : map_list_agree [] kmap_empty.
+Proof.
+  split; [| split].
+  - apply NoDup_nil.
+  - intros e [].
+  - intros id e H. rewrite kmap_find_empty in H. discriminate.
+Defined.
+
+(** Helper: replace_or_add is transparent for events with a different id. *)
+
+Lemma replace_or_add_preserves_other
+  : forall e acc x,
+    ev_id e <> ev_id x ->
+    In x (replace_or_add e acc) <-> In x acc.
+Proof.
+  intros e acc x Hne. induction acc as [| h t IH]; simpl.
+  - split.
+    + intros [H | []]. subst. exfalso. exact (Hne eq_refl).
+    + intros [].
+  - destruct (key_eqb (ev_id h) (ev_id e)) eqn:Heq.
+    + apply key_eqb_eq in Heq.
+      destruct (should_replace h e); simpl.
+      * split.
+        -- intros [H | H]; [subst; exfalso; exact (Hne eq_refl) | right; exact H].
+        -- intros [H | H]; [subst; exfalso; apply Hne; symmetry; exact Heq | right; exact H].
+      * tauto.
+    + simpl. rewrite IH. tauto.
+Defined.
+
+(** Helper: replace_or_add_map at a different key is transparent. *)
+
+Lemma kmap_find_replace_or_add_map_other
+  : forall e m id,
+    ev_id e <> id ->
+    kmap_find id (replace_or_add_map e m) = kmap_find id m.
+Proof.
+  intros e m id Hne. unfold replace_or_add_map.
+  destruct (kmap_find (ev_id e) m) as [old |].
+  - destruct (should_replace old e).
+    + apply kmap_find_add_other. exact Hne.
+    + reflexivity.
+  - apply kmap_find_add_other. exact Hne.
+Defined.
+
+(** Helper: replace_or_add_map at the same key. *)
+
+Lemma kmap_find_replace_or_add_map_same
+  : forall e m,
+    kmap_find (ev_id e) (replace_or_add_map e m) =
+    match kmap_find (ev_id e) m with
+    | Some old => if should_replace old e then Some e else Some old
+    | None => Some e
+    end.
+Proof.
+  intros e m. unfold replace_or_add_map.
+  destruct (kmap_find (ev_id e) m) as [old |] eqn:Hf.
+  - destruct (should_replace old e) eqn:Hsr.
+    + apply kmap_find_add_same.
+    + exact Hf.
+  - apply kmap_find_add_same.
 Defined.
 
 (** * The canonicalizer. *)
