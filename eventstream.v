@@ -192,6 +192,10 @@ Record event : Type := mkEvent {
   ev_kind : event_kind
 }.
 
+(** Conflict resolution: should_replace old_event new_event = true
+    means the new event wins when both share the same id. *)
+Variable should_replace : event -> event -> bool.
+
 (** * Decidable equality. *)
 
 Definition event_kind_eqb (k1 k2 : event_kind) : bool :=
@@ -674,7 +678,7 @@ Fixpoint replace_or_add (e : event) (acc : list event) : list event :=
   | [] => [e]
   | h :: t =>
     if Nat.eqb (ev_id h) (ev_id e) then
-      if Nat.leb (ev_seq h) (ev_seq e) then e :: t
+      if should_replace h e then e :: t
       else h :: t
     else h :: replace_or_add e t
   end.
@@ -704,7 +708,7 @@ Definition IdMap_In (id : nat) (m : IdMap.t event) : Prop :=
 
 Definition replace_or_add_map (e : event) (m : IdMap.t event) : IdMap.t event :=
   match IdMap.find (ev_id e) m with
-  | Some old => if Nat.leb (ev_seq old) (ev_seq e)
+  | Some old => if should_replace old e
                 then IdMap.add (ev_id e) e m
                 else m
   | None => IdMap.add (ev_id e) e m
@@ -732,7 +736,7 @@ Lemma replace_or_add_map_In_id
 Proof.
   intros e m. unfold replace_or_add_map.
   destruct (IdMap.find (ev_id e) m) as [old |] eqn:Hf.
-  - destruct (Nat.leb (ev_seq old) (ev_seq e)).
+  - destruct (should_replace old e).
     + exists e. apply IdMap.add_1. reflexivity.
     + exists old. apply IdMap.find_2. exact Hf.
   - exists e. apply IdMap.add_1. reflexivity.
@@ -746,7 +750,7 @@ Proof.
   intros e m id Hne. unfold replace_or_add_map.
   assert (Hne' : ~ Nat_as_OT.eq (ev_id e) id) by exact Hne.
   destruct (IdMap.find (ev_id e) m) as [old |] eqn:Hf.
-  - destruct (Nat.leb (ev_seq old) (ev_seq e)).
+  - destruct (should_replace old e).
     + split.
       * intros [v Hv]. exists v.
         apply IdMap.add_3 in Hv; [ exact Hv | exact Hne' ].
@@ -879,7 +883,7 @@ Proof.
   induction acc as [| h t IH]; simpl.
   - intros x [Hx | []]. subst. exact Hk.
   - destruct (Nat.eqb (ev_id h) (ev_id e)).
-    + destruct (Nat.leb (ev_seq h) (ev_seq e)).
+    + destruct (should_replace h e).
       * intros x [Hx | Hx]; [ subst; exact Hk | apply Hacc; right; exact Hx ].
       * intros x [Hx | Hx]; [ subst; apply Hacc; left; reflexivity | apply Hacc; right; exact Hx ].
     + intros x [Hx | Hx].
@@ -936,7 +940,7 @@ Proof.
   intros e acc. induction acc as [| h t IH]; simpl.
   - reflexivity.
   - destruct (Nat.eqb (ev_id h) (ev_id e)) eqn:Heq; simpl.
-    + destruct (Nat.leb (ev_seq h) (ev_seq e)); simpl.
+    + destruct (should_replace h e); simpl.
       * unfold ids_of. simpl. apply Nat.eqb_eq in Heq. rewrite Heq. reflexivity.
       * reflexivity.
     + unfold ids_of in *. simpl.
@@ -950,7 +954,7 @@ Proof.
   intros e acc Hnd. induction acc as [| h t IH]; simpl.
   - apply NoDup_cons. { simpl. auto. } apply NoDup_nil.
   - destruct (Nat.eqb (ev_id h) (ev_id e)) eqn:Heq.
-    + destruct (Nat.leb (ev_seq h) (ev_seq e)).
+    + destruct (should_replace h e).
       * apply Nat.eqb_eq in Heq.
         unfold ids_of. simpl.
         inversion Hnd; subst. rewrite <- Heq.
@@ -1111,7 +1115,7 @@ Proof.
   intros e acc. induction acc as [| h t IH]; simpl.
   - intros x [Hx | []]. left. exact Hx.
   - destruct (Nat.eqb (ev_id h) (ev_id e)) eqn:Heq.
-    + destruct (Nat.leb (ev_seq h) (ev_seq e)).
+    + destruct (should_replace h e).
       * intros x [Hx | Hx].
         -- left. exact Hx.
         -- right. right. exact Hx.
@@ -1202,7 +1206,7 @@ Proof.
   intros e acc. induction acc as [| h t IH]; simpl.
   - left. reflexivity.
   - destruct (Nat.eqb (ev_id h) (ev_id e)) eqn:Heq.
-    + destruct (Nat.leb (ev_seq h) (ev_seq e)).
+    + destruct (should_replace h e).
       * left. reflexivity.
       * left. apply Nat.eqb_eq. exact Heq.
     + right. exact IH.
@@ -1218,7 +1222,7 @@ Proof.
     + intros [Hx | []]. exfalso. apply Hne. exact Hx.
     + intros [].
   - destruct (Nat.eqb (ev_id h) (ev_id e)) eqn:Heq.
-    + destruct (Nat.leb (ev_seq h) (ev_seq e)).
+    + destruct (should_replace h e).
       * apply Nat.eqb_eq in Heq.
         unfold ids_of. simpl. rewrite Heq.
         split; intro H; exact H.
@@ -1461,19 +1465,22 @@ Lemma nat_payload_eqb_spec
   : forall p1 p2, reflect (p1 = p2) (Nat.eqb p1 p2).
 Proof. intros. apply Nat.eqb_spec. Qed.
 
+Definition nat_should_replace (old new_ : event nat) : bool :=
+  Nat.leb (ev_seq nat old) (ev_seq nat new_).
+
 (** Convenience aliases for the nat-instantiated definitions. *)
 
 Notation nat_event := (event nat).
-Notation nat_canonicalize := (canonicalize nat Nat.compare).
-Notation nat_fold_stream := (fold_stream nat Nat.compare).
+Notation nat_canonicalize := (canonicalize nat Nat.compare nat_should_replace).
+Notation nat_fold_stream := (fold_stream nat Nat.compare nat_should_replace).
 Notation nat_sort_events := (sort_events nat Nat.compare).
-Notation nat_apply_events := (apply_events nat).
-Notation nat_process_one := (process_one nat).
+Notation nat_apply_events := (apply_events nat nat_should_replace).
+Notation nat_process_one := (process_one nat nat_should_replace).
 Notation nat_event_leb := (event_leb nat Nat.compare).
 Notation nat_event_eqb := (event_eqb nat Nat.compare Nat.eqb).
-Notation nat_detect_gaps := (detect_gaps nat Nat.compare).
-Notation nat_replace_or_add_map := (replace_or_add_map nat).
-Notation nat_apply_events_map := (apply_events_map nat).
+Notation nat_detect_gaps := (detect_gaps nat Nat.compare nat_should_replace).
+Notation nat_replace_or_add_map := (replace_or_add_map nat nat_should_replace).
+Notation nat_apply_events_map := (apply_events_map nat nat_should_replace).
 Notation nat_map_values := (map_values nat).
 
 (** * Worked examples: real-world canonicalization scenarios.
