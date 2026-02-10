@@ -1,3 +1,7 @@
+# Coq/Rocq extraction output
+*.ml
+*.mli
+
 # Coq/Rocq build artifacts
 *.vo
 *.vos
