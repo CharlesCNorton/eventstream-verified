@@ -709,6 +709,328 @@ Proof.
   - intros e _ Hin. destruct Hin.
 Defined.
 
+(** * Output ids are a subset of input ids. *)
+
+Lemma replace_or_add_ids_incl
+  : forall e acc,
+    incl (ids_of (replace_or_add e acc)) (ev_id e :: ids_of acc).
+Proof.
+  intros e acc. induction acc as [| h t IH]; simpl.
+  - intros x [Hx | []]. left. exact Hx.
+  - destruct (Nat.eqb (ev_id h) (ev_id e)) eqn:Heq.
+    + destruct (Nat.leb (ev_seq h) (ev_seq e)).
+      * intros x [Hx | Hx].
+        -- left. exact Hx.
+        -- right. right. exact Hx.
+      * intros x [Hx | Hx].
+        -- right. left. exact Hx.
+        -- right. right. exact Hx.
+    + intros x [Hx | Hx].
+      * right. left. exact Hx.
+      * destruct (IH x Hx) as [Hy | Hy].
+        -- left. exact Hy.
+        -- right. right. exact Hy.
+Defined.
+
+Lemma filter_ids_incl
+  : forall f acc, incl (ids_of (filter f acc)) (ids_of acc).
+Proof.
+  intros f acc. induction acc as [| h t IH]; simpl.
+  - intros x [].
+  - destruct (f h).
+    + intros x [Hx | Hx].
+      * left. exact Hx.
+      * right. apply IH. exact Hx.
+    + intros x Hx. right. apply IH. exact Hx.
+Defined.
+
+Lemma apply_events_ids_incl
+  : forall stream acc,
+    incl (ids_of (apply_events stream acc))
+         (ids_of stream ++ ids_of acc).
+Proof.
+  intros stream. induction stream as [| e rest IH]; simpl; intros acc.
+  - intros x Hx. exact Hx.
+  - assert (Hgoal : forall x,
+      In x (ids_of (apply_events rest (replace_or_add e acc))) ->
+      In x (ev_id e :: ids_of rest ++ ids_of acc)).
+    { intros y Hy.
+      specialize (IH _ y Hy).
+      apply in_app_or in IH. destruct IH as [Hy' | Hy'].
+      - right. apply in_or_app. left. exact Hy'.
+      - destruct (replace_or_add_ids_incl e acc y Hy') as [Hz | Hz].
+        + left. exact Hz.
+        + right. apply in_or_app. right. exact Hz. }
+    assert (Hgoal2 : forall x,
+      In x (ids_of (apply_events rest (filter (fun x0 => negb (Nat.eqb (ev_id x0) (ev_id e))) acc))) ->
+      In x (ev_id e :: ids_of rest ++ ids_of acc)).
+    { intros y Hy.
+      specialize (IH _ y Hy).
+      apply in_app_or in IH. destruct IH as [Hy' | Hy'].
+      - right. apply in_or_app. left. exact Hy'.
+      - right. apply in_or_app. right.
+        apply (filter_ids_incl _ acc y Hy'). }
+    destruct (ev_kind e); intros x Hx.
+    + apply Hgoal. exact Hx.
+    + apply Hgoal. exact Hx.
+    + apply Hgoal2. exact Hx.
+Defined.
+
+Lemma ids_of_sort_perm
+  : forall l, Permutation (ids_of (sort_events l)) (ids_of l).
+Proof.
+  intro l. unfold ids_of.
+  apply Permutation_map. apply Permutation_sym. apply sort_events_perm.
+Defined.
+
+Theorem canonicalize_ids_subset
+  : forall stream,
+    incl (ids_of (canonicalize stream)) (ids_of stream).
+Proof.
+  intro stream. unfold canonicalize.
+  intros x Hx.
+  set (ae := apply_events (sort_events stream) []) in *.
+  assert (Hin : In x (ids_of ae)).
+  { apply (Permutation_in x (ids_of_sort_perm ae)). exact Hx. }
+  assert (Hin2 : In x (ids_of (sort_events stream) ++ ids_of [])).
+  { apply (apply_events_ids_incl (sort_events stream) [] x Hin). }
+  simpl in Hin2. rewrite app_nil_r in Hin2.
+  apply (Permutation_in x (ids_of_sort_perm stream)). exact Hin2.
+Defined.
+
+(** * Semantic characterization of canonicalize.
+    An id appears in the output iff the last event for that id
+    (in sort order) is not a Cancel. This is the spec-level theorem
+    that says what canonicalize computes, not just its algebraic properties. *)
+
+Fixpoint last_with_id (id : nat) (stream : list event) : option event :=
+  match stream with
+  | [] => None
+  | e :: rest =>
+    match last_with_id id rest with
+    | Some e' => Some e'
+    | None => if Nat.eqb (ev_id e) id then Some e else None
+    end
+  end.
+
+Lemma last_with_id_None
+  : forall id stream,
+    last_with_id id stream = None ->
+    forall e, In e stream -> ev_id e <> id.
+Proof.
+  intros id stream. revert id.
+  induction stream as [| h t IH]; simpl; intros id Hlast e Hin.
+  - destruct Hin.
+  - destruct (last_with_id id t) eqn:Ht; [ discriminate | ].
+    destruct (Nat.eqb (ev_id h) id) eqn:Heq; [ discriminate | ].
+    destruct Hin as [<- | Hin].
+    + apply Nat.eqb_neq. exact Heq.
+    + exact (IH id Ht e Hin).
+Defined.
+
+Lemma replace_or_add_has_id
+  : forall e acc, In (ev_id e) (ids_of (replace_or_add e acc)).
+Proof.
+  intros e acc. induction acc as [| h t IH]; simpl.
+  - left. reflexivity.
+  - destruct (Nat.eqb (ev_id h) (ev_id e)) eqn:Heq.
+    + destruct (Nat.leb (ev_seq h) (ev_seq e)).
+      * left. reflexivity.
+      * left. apply Nat.eqb_eq. exact Heq.
+    + right. exact IH.
+Defined.
+
+Lemma replace_or_add_other_id
+  : forall e acc id,
+    ev_id e <> id ->
+    In id (ids_of (replace_or_add e acc)) <-> In id (ids_of acc).
+Proof.
+  intros e acc id Hne. induction acc as [| h t IH]; simpl.
+  - split.
+    + intros [Hx | []]. exfalso. apply Hne. exact Hx.
+    + intros [].
+  - destruct (Nat.eqb (ev_id h) (ev_id e)) eqn:Heq.
+    + destruct (Nat.leb (ev_seq h) (ev_seq e)).
+      * apply Nat.eqb_eq in Heq.
+        unfold ids_of. simpl. rewrite Heq.
+        split; intro H; exact H.
+      * split; intro H; exact H.
+    + simpl. split.
+      * intros [Hx | Hx]; [ left; exact Hx | right; apply IH; exact Hx ].
+      * intros [Hx | Hx]; [ left; exact Hx | right; apply IH; exact Hx ].
+Defined.
+
+Lemma filter_removes_id
+  : forall id acc,
+    ~ In id (ids_of (filter (fun x => negb (Nat.eqb (ev_id x) id)) acc)).
+Proof.
+  intros id acc. induction acc as [| h t IH]; simpl.
+  - intro H. exact H.
+  - destruct (negb (Nat.eqb (ev_id h) id)) eqn:Hf.
+    + simpl. intros [Hx | Hx].
+      * apply negb_true_iff in Hf. apply Nat.eqb_neq in Hf.
+        apply Hf. exact Hx.
+      * exact (IH Hx).
+    + exact IH.
+Defined.
+
+Lemma filter_preserves_other_id
+  : forall id id' acc,
+    id' <> id ->
+    In id' (ids_of (filter (fun x => negb (Nat.eqb (ev_id x) id)) acc)) <->
+    In id' (ids_of acc).
+Proof.
+  intros id id' acc Hne. induction acc as [| h t IH]; simpl.
+  - split; intro H; exact H.
+  - destruct (negb (Nat.eqb (ev_id h) id)) eqn:Hf.
+    + simpl. split.
+      * intros [Hx | Hx]; [ left; exact Hx | right; apply IH; exact Hx ].
+      * intros [Hx | Hx]; [ left; exact Hx | right; apply IH; exact Hx ].
+    + split.
+      * intro Hx. right. apply IH. exact Hx.
+      * intros [Hx | Hx].
+        -- exfalso. apply negb_false_iff in Hf. apply Nat.eqb_eq in Hf.
+           apply Hne. rewrite <- Hx. exact Hf.
+        -- apply IH. exact Hx.
+Defined.
+
+(** Helper: if no event in the stream has id, the acc is transparent. *)
+
+Lemma apply_events_no_id_transparent
+  : forall stream acc id,
+    (forall e, In e stream -> ev_id e <> id) ->
+    In id (ids_of (apply_events stream acc)) <-> In id (ids_of acc).
+Proof.
+  induction stream as [| e rest IH]; simpl; intros acc id Hall.
+  - split; intro H; exact H.
+  - assert (Hne : ev_id e <> id) by (apply Hall; left; reflexivity).
+    assert (Hrest : forall x, In x rest -> ev_id x <> id)
+      by (intros x Hx; apply Hall; right; exact Hx).
+    destruct (ev_kind e) eqn:Hk.
+    + rewrite IH by exact Hrest.
+      apply replace_or_add_other_id. exact Hne.
+    + rewrite IH by exact Hrest.
+      apply replace_or_add_other_id. exact Hne.
+    + rewrite IH by exact Hrest.
+      apply filter_preserves_other_id. intro Hc. apply Hne. symmetry. exact Hc.
+Defined.
+
+Theorem apply_events_spec
+  : forall stream acc id,
+    In id (ids_of (apply_events stream acc)) <->
+    match last_with_id id stream with
+    | None => In id (ids_of acc)
+    | Some e => ev_kind e <> Cancel
+    end.
+Proof.
+  induction stream as [| e rest IH]; simpl; intros acc id.
+  - split; intro H; exact H.
+  - destruct (last_with_id id rest) eqn:Hlast.
+    + (* Last event for id is in rest — head doesn't change the answer. *)
+      destruct (ev_kind e) eqn:Hk.
+      * specialize (IH (replace_or_add e acc) id). rewrite Hlast in IH. exact IH.
+      * specialize (IH (replace_or_add e acc) id). rewrite Hlast in IH. exact IH.
+      * specialize (IH (filter (fun x => negb (Nat.eqb (ev_id x) (ev_id e))) acc) id).
+        rewrite Hlast in IH. exact IH.
+    + (* No event for id in rest. *)
+      assert (Hrest : forall x, In x rest -> ev_id x <> id)
+        by (intros x Hx; exact (last_with_id_None id rest Hlast x Hx)).
+      destruct (Nat.eqb (ev_id e) id) eqn:Heq.
+      * apply Nat.eqb_eq in Heq. subst id.
+        destruct (ev_kind e) eqn:Hk.
+        -- (* Original: adds to acc, rest doesn't touch it. *)
+           rewrite apply_events_no_id_transparent by exact Hrest.
+           split.
+           ++ intro. discriminate.
+           ++ intro. apply replace_or_add_has_id.
+        -- (* Correction: same. *)
+           rewrite apply_events_no_id_transparent by exact Hrest.
+           split.
+           ++ intro. discriminate.
+           ++ intro. apply replace_or_add_has_id.
+        -- (* Cancel: removes from acc, rest doesn't re-add. *)
+           rewrite apply_events_no_id_transparent by exact Hrest.
+           split.
+           ++ intro Hin. exfalso. exact (filter_removes_id (ev_id e) acc Hin).
+           ++ intro Habs. exfalso. apply Habs. reflexivity.
+      * (* Head event has different id — transparent. *)
+        apply Nat.eqb_neq in Heq.
+        destruct (ev_kind e) eqn:Hk.
+        -- rewrite apply_events_no_id_transparent by exact Hrest.
+           apply replace_or_add_other_id. exact Heq.
+        -- rewrite apply_events_no_id_transparent by exact Hrest.
+           apply replace_or_add_other_id. exact Heq.
+        -- rewrite apply_events_no_id_transparent by exact Hrest.
+           apply filter_preserves_other_id. intro Hc. apply Heq. symmetry. exact Hc.
+Defined.
+
+(** Lift to canonicalize. *)
+
+Theorem canonicalize_spec
+  : forall stream id,
+    In id (ids_of (canonicalize stream)) <->
+    match last_with_id id (sort_events stream) with
+    | None => False
+    | Some e => ev_kind e <> Cancel
+    end.
+Proof.
+  intros stream id. unfold canonicalize.
+  rewrite <- (apply_events_spec (sort_events stream) [] id).
+  split.
+  - intro Hx. apply (Permutation_in id (ids_of_sort_perm _)) in Hx.
+    exact Hx.
+  - intro Hx. apply (Permutation_in id (Permutation_sym (ids_of_sort_perm _))).
+    exact Hx.
+Defined.
+
+(** * Online processing via fold_left. *)
+
+Definition process_one (acc : list event) (e : event) : list event :=
+  match ev_kind e with
+  | Original => replace_or_add e acc
+  | Correction => replace_or_add e acc
+  | Cancel => filter (fun x => negb (Nat.eqb (ev_id x) (ev_id e))) acc
+  end.
+
+Lemma fold_left_eq_apply_events
+  : forall stream acc,
+    fold_left process_one stream acc = apply_events stream acc.
+Proof.
+  induction stream as [| e rest IH]; intro acc.
+  - reflexivity.
+  - simpl. rewrite IH. unfold process_one.
+    destruct (ev_kind e); reflexivity.
+Defined.
+
+(** Online-batch equivalence: processing any sorted stream incrementally
+    via fold_left, then sorting the result, equals canonicalize. This is
+    non-trivial because fold_left operates left-to-right on a pre-sorted
+    stream, while canonicalize composes sort-apply-sort. The equivalence
+    follows from fold_left = apply_events and the definition of canonicalize. *)
+
+Definition fold_stream (stream : list event) : list event :=
+  sort_events (fold_left process_one (sort_events stream) []).
+
+Theorem online_batch_equiv
+  : forall stream, fold_stream stream = canonicalize stream.
+Proof.
+  intro stream. unfold fold_stream, canonicalize.
+  rewrite fold_left_eq_apply_events. reflexivity.
+Defined.
+
+(** Stronger form: for any partitioning of a sorted stream into contiguous
+    chunks, processing each chunk sequentially equals batch processing. *)
+
+Theorem chunked_processing
+  : forall chunks acc,
+    fold_left (fun a chunk => apply_events chunk a) chunks acc =
+    apply_events (concat chunks) acc.
+Proof.
+  induction chunks as [| c rest IH]; simpl; intro acc.
+  - reflexivity.
+  - rewrite IH. rewrite apply_events_app. reflexivity.
+Defined.
+
 (** * Gap detection: find event ids present in the stream but absent
     from the canonical output, indicating they were cancelled or
     superseded without replacement. *)
@@ -739,5 +1061,5 @@ Require Import ExtrOcamlBasic.
 Require Import ExtrOcamlNatInt.
 
 Extraction "D:/eventstream-verified/eventstream.ml"
-  canonicalize sort_events apply_events
+  canonicalize fold_stream sort_events apply_events process_one
   event_leb event_eqb detect_gaps.

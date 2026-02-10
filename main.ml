@@ -127,4 +127,82 @@ let () =
   assert (List.mem 3 gaps);
   assert (not (List.mem 2 gaps));
 
-  Printf.printf "All tests passed.\n"
+  (* Test 10: Cancel then re-add same id *)
+  let raw10 = [
+    mkEvent 1 100 0 10 Original;
+    mkEvent 1 200 1 0 Cancel;
+    mkEvent 1 300 2 99 Original;
+  ] in
+  let canon10 = canonicalize raw10 in
+  print_stream "Test 10 - Cancel then re-add" raw10;
+  print_stream "Test 10 - Output" canon10;
+  assert (List.length canon10 = 1);
+  assert ((List.hd canon10).ev_payload = 99);
+  assert ((List.hd canon10).ev_timestamp = 300);
+
+  (* Test 11: Multiple corrections to same id, highest seq wins *)
+  let raw11 = [
+    mkEvent 1 100 0 10 Original;
+    mkEvent 1 100 3 30 Correction;
+    mkEvent 1 100 1 11 Correction;
+    mkEvent 1 100 5 50 Correction;
+    mkEvent 1 100 2 20 Correction;
+  ] in
+  let canon11 = canonicalize raw11 in
+  print_stream "Test 11 - Multiple corrections" raw11;
+  print_stream "Test 11 - Output" canon11;
+  assert (List.length canon11 = 1);
+  assert ((List.hd canon11).ev_payload = 50);
+  assert ((List.hd canon11).ev_seq = 5);
+
+  (* Test 12: Cancel of nonexistent id is harmless *)
+  let raw12 = [
+    mkEvent 1 100 0 10 Original;
+    mkEvent 99 200 0 0 Cancel;
+  ] in
+  let canon12 = canonicalize raw12 in
+  print_stream "Test 12 - Cancel nonexistent" raw12;
+  print_stream "Test 12 - Output" canon12;
+  assert (List.length canon12 = 1);
+  assert ((List.hd canon12).ev_id = 1);
+
+  (* Test 13: Online-batch equivalence via fold_stream *)
+  let raw13 = [
+    mkEvent 3 300 0 30 Original;
+    mkEvent 1 100 0 10 Original;
+    mkEvent 2 200 1 0 Cancel;
+    mkEvent 2 150 0 20 Original;
+    mkEvent 1 100 1 15 Correction;
+  ] in
+  let batch13 = canonicalize raw13 in
+  let online13 = fold_stream raw13 in
+  print_stream "Test 13 - Batch" batch13;
+  print_stream "Test 13 - Online (fold_stream)" online13;
+  assert (batch13 = online13);
+
+  (* Test 14: All events cancelled *)
+  let raw14 = [
+    mkEvent 1 100 0 10 Original;
+    mkEvent 2 200 0 20 Original;
+    mkEvent 1 300 1 0 Cancel;
+    mkEvent 2 400 1 0 Cancel;
+  ] in
+  let canon14 = canonicalize raw14 in
+  print_stream "Test 14 - All cancelled" raw14;
+  print_stream "Test 14 - Output" canon14;
+  assert (canon14 = []);
+
+  (* Test 15: Singleton *)
+  let raw15 = [mkEvent 1 100 0 42 Original] in
+  let canon15 = canonicalize raw15 in
+  assert (List.length canon15 = 1);
+  assert ((List.hd canon15).ev_payload = 42);
+
+  (* Test 16: Idempotence on complex stream *)
+  let canon13a = canonicalize raw13 in
+  let canon13b = canonicalize canon13a in
+  let canon13c = canonicalize canon13b in
+  assert (canon13a = canon13b);
+  assert (canon13b = canon13c);
+
+  Printf.printf "All 16 tests passed.\n"
