@@ -63,20 +63,27 @@ end = struct
   type payload = P.t
   type ev      = (key, payload) Eventstream.event
 
-  let canonicalize stream =
-    Eventstream.canonicalize K.compare K.eqb P.compare
-      C.should_replace C.cancel_handler stream
+  (* O(n log n) sort via OCaml's List.sort (stable mergesort).
+     Semantically identical to the extracted insertion sort by
+     sort_unique: any sorted permutation under a total order is unique. *)
+  let event_cmp (e1 : ev) (e2 : ev) : int =
+    match Eventstream.event_compare K.compare P.compare e1 e2 with
+    | Eq -> 0 | Lt -> -1 | Gt -> 1
 
-  let fold_stream stream =
-    Eventstream.fold_stream K.compare K.eqb P.compare
-      C.should_replace C.cancel_handler stream
-
-  let sort_events stream =
-    Eventstream.sort_events K.compare P.compare stream
+  let sort_events stream = List.sort event_cmp stream
 
   let apply_events sorted acc =
     Eventstream.apply_events K.eqb C.should_replace C.cancel_handler
       sorted acc
+
+  let canonicalize stream =
+    sort_events (apply_events (sort_events stream) [])
+
+  let fold_stream stream =
+    sort_events
+      (List.fold_left
+        (Eventstream.process_one K.eqb C.should_replace C.cancel_handler)
+        [] (sort_events stream))
 
   let process_one acc e =
     Eventstream.process_one K.eqb C.should_replace C.cancel_handler
@@ -89,8 +96,11 @@ end = struct
     Eventstream.event_eqb K.eqb P.eqb e1 e2
 
   let detect_gaps stream =
-    Eventstream.detect_gaps K.compare K.eqb P.compare
-      C.should_replace C.cancel_handler stream
+    let input_ids = Eventstream.dedup_key K.eqb (Eventstream.ids_of stream) in
+    let output_ids = Eventstream.ids_of (canonicalize stream) in
+    List.filter
+      (fun id -> Eventstream.negb (Eventstream.mem_key K.eqb id output_ids))
+      input_ids
 
   let ids_of = Eventstream.ids_of
 end

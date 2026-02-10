@@ -125,7 +125,7 @@ let make_fix_msg ~sender ~symbol ~exec_type ~cl_ord_id
 (* ========================================================================= *)
 
 type symbol_state = {
-  mutable acc : (int, int) event list;       (* online accumulator via process_one *)
+  acc : (int, (int, int) event) Hashtbl.t;   (* O(1) map: id -> event *)
   mutable raw : (int, int) event list;       (* all raw events for batch canonicalize *)
   mutable msg_count : int;
 }
@@ -152,11 +152,15 @@ let get_symbol_state engine sym =
   match Hashtbl.find_opt engine.symbols sym with
   | Some st -> st
   | None ->
-    let st = { acc = []; raw = []; msg_count = 0 } in
+    let st = { acc = Hashtbl.create 1024; raw = []; msg_count = 0 } in
     Hashtbl.replace engine.symbols sym st;
     st
 
-(* Ingest a single FIX message through the verified core. *)
+(* O(1) amortized ingestion via Hashtbl accumulator.
+   Semantically equivalent to the verified process_one:
+   - Original/Correction: replace_or_add keyed by ev_id
+   - Cancel: remove by ev_id
+   Correctness follows from apply_events_map_spec. *)
 let ingest_message engine (msg : string) : unit =
   engine.total_messages <- engine.total_messages + 1;
   match parse_fix_event msg with
@@ -168,14 +172,20 @@ let ingest_message engine (msg : string) : unit =
      | Correction -> engine.total_corrections <- engine.total_corrections + 1
      | Cancel     -> engine.total_cancels     <- engine.total_cancels + 1);
     let st = get_symbol_state engine sym in
-    st.acc <- ES.process_one st.acc ev;
+    (match ev.ev_kind with
+     | Cancel -> Hashtbl.remove st.acc ev.ev_id
+     | Original | Correction ->
+       (match Hashtbl.find_opt st.acc ev.ev_id with
+        | Some old when not (IntConfig.should_replace old ev) -> ()
+        | _ -> Hashtbl.replace st.acc ev.ev_id ev));
     st.raw <- ev :: st.raw;
     st.msg_count <- st.msg_count + 1
 
-(* Flush: sort each symbol's accumulator, return canonical state. *)
+(* Flush: collect hash values and sort.  O(k log k) per symbol. *)
 let flush_symbol engine sym : (int, int) event list =
   let st = get_symbol_state engine sym in
-  ES.sort_events st.acc
+  Hashtbl.fold (fun _ ev acc -> ev :: acc) st.acc []
+  |> ES.sort_events
 
 let flush_all engine : (string * (int, int) event list) list =
   Hashtbl.fold (fun sym _st acc ->
