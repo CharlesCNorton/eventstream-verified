@@ -1,0 +1,36 @@
+# Coq/Rocq build artifacts
+*.vo
+*.vos
+*.vok
+*.glob
+*.aux
+.*.aux
+*.crashcoqide
+
+# OCaml build artifacts
+*.cmo
+*.cmi
+*.cmx
+*.cma
+*.cmxa
+*.cmxs
+*.o
+*.a
+*.exe
+*.byte
+*.native
+_build/
+
+# Editor/IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.merlin
+.coq-native/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
