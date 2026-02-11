@@ -19,6 +19,8 @@ All proofs are constructive (`Defined`, not `Qed`) and extract to executable OCa
 | **Determinism** | `canonicalize_deterministic` | Any permutation of the input produces identical output |
 | **Idempotence** | `canonicalize_idempotent` | Re-ingesting canonical output is a no-op |
 | **Sort correctness** | `sort_events_perm`, `sort_events_sorted` | Output is a sorted permutation of the processed stream |
+| **External sort equivalence** | `external_sort_eq` | Any function producing a sorted permutation equals `sort_events` |
+| **Map-list equivalence** | `apply_events_map_equiv` | O(n log n) map-backed accumulator equals O(n^2) list-based spec |
 | **No cancel leakage** | `apply_events_no_cancels` | Cancel events are consumed during processing, never emitted |
 | **Unique ids** | `apply_events_NoDup` | Each event id appears at most once in output |
 | **Semantic spec** | `canonicalize_spec` | An id survives iff its last event (in sort order) is not a Cancel |
@@ -28,13 +30,15 @@ All proofs are constructive (`Defined`, not `Qed`) and extract to executable OCa
 
 ## Event model
 
+The Coq formalization is parameterized over `Key`, `Payload`, comparison functions, conflict resolution (`should_replace`), and cancel semantics (`cancel_handler`).  The nat instantiation used for proof-checked examples:
+
 ```
 Record event : Type := mkEvent {
-  ev_id        : nat;    (* unique event identifier *)
-  ev_timestamp : nat;    (* arrival or trade time *)
-  ev_seq       : nat;    (* sequence number for amendments *)
-  ev_payload   : nat;    (* domain-specific value *)
-  ev_kind      : event_kind  (* Original | Correction | Cancel *)
+  ev_id        : Key;       (* unique event identifier *)
+  ev_timestamp : Key;       (* arrival or trade time *)
+  ev_seq       : Key;       (* sequence number for amendments *)
+  ev_payload   : Payload;   (* domain-specific value *)
+  ev_kind      : event_kind (* Original | Correction | Cancel *)
 }.
 ```
 
@@ -43,6 +47,28 @@ Record event : Type := mkEvent {
 - **Cancel**: removes all events with the matching id from the output.
 
 Total order is lexicographic over `(timestamp, seq, id, payload, kind)`, making the sort fully deterministic.
+
+## OCaml functor
+
+The extracted code is wrapped in a parameterized functor (`eventstream_functor.ml`).  Instantiate with concrete `KEY`, `PAYLOAD`, and `CONFIG` modules:
+
+```ocaml
+module ES = Eventstream_functor.Make(IntKey)(IntPayload)(IntConfig)
+
+let canonical = ES.canonicalize raw_events
+let gaps = ES.detect_gaps raw_events
+```
+
+`CONFIG.validate` is called on every event entering `canonicalize`, `fold_stream`, and `process_one`.  The int instantiation rejects negative values (Coq nat is non-negative; `ExtrOcamlNatInt` maps nat to OCaml `int`).
+
+## FIX protocol engine
+
+`fix_engine.ml` is an unverified adapter mapping FIX 4.4 ExecutionReport messages to the verified event type.  It includes:
+
+- FIX field parsing and serialization (pipe-delimited wire format)
+- Per-symbol streaming engine with O(1) Hashtbl accumulator and authoritative batch flush
+- Synthetic market data generator (100 symbols, 6 venues, realistic event distribution)
+- Demo mode (`--demo`) and throughput benchmark (`--bench [N]`)
 
 ## Worked examples
 
@@ -60,27 +86,49 @@ Each scenario verifies idempotence, determinism, or online-batch equivalence on 
 
 ## Building
 
-Requires [Coq Platform](https://github.com/coq/platform) 8.19+.
+Requires [Coq Platform](https://github.com/coq/platform) 8.19+ and OCaml 4.14+.
 
 ```bash
 # Compile the formalization (produces .vo and extracts eventstream.ml)
 coqc eventstream.v
 
-# Build and run the OCaml test suite
-ocamlfind ocamlc -package stdlib-shims -linkpkg \
-  eventstream.mli eventstream.ml main.ml -o test.exe
+# Restore the hand-written .mli (coqc overwrites it)
+git checkout eventstream.mli
+
+# Build and run everything via Makefile
+make all
+```
+
+Or manually:
+
+```bash
+# Unit tests (16 tests)
+ocamlc eventstream.mli eventstream.ml eventstream_functor.ml \
+  int_instance.ml main.ml -o test.exe
 ocamlrun test.exe
 
-# Run random stress tests (1000 trials, 8 properties each)
-ocamlfind ocamlc -package stdlib-shims -linkpkg \
-  eventstream.mli eventstream.ml test_random.ml -o test_random.exe
+# Random stress tests (1000 trials, 8 properties each, int + string keys)
+ocamlc eventstream.mli eventstream.ml eventstream_functor.ml \
+  int_instance.ml test_random.ml -o test_random.exe
 ocamlrun test_random.exe
+
+# FIX round-trip + streaming tests
+ocamlc eventstream.mli eventstream.ml eventstream_functor.ml \
+  int_instance.ml fix_engine.ml test_fix.ml -o test_fix.exe
+ocamlrun test_fix.exe
+
+# FIX engine demo / benchmark
+ocamlc eventstream.mli eventstream.ml eventstream_functor.ml \
+  int_instance.ml fix_engine.ml fix_engine_main.ml -o fix_engine.exe
+ocamlrun fix_engine.exe --demo
+ocamlrun fix_engine.exe --bench 5000000
 ```
 
 ## Design notes
 
-- **Insertion sort** is used for proof clarity.  The sort interface (`Permutation` + `Sorted`) is shared with `Coq.Sorting.Mergesort`, so swapping in O(n log n) for production is a drop-in change.
-- **Unary nat** is the extraction base type, mapped to OCaml `int` via `ExtrOcamlNatInt`.  A production deployment would parameterize over a richer event type with structured payloads.
+- **Bottom-up mergesort** is defined directly as fixpoints inside the parameterized Section.  `external_sort_eq` proves that any function producing a sorted permutation equals `sort_events`, justifying the use of OCaml's `List.sort` in the functor.
+- **Map-backed accumulator** (`apply_events_map`) uses an abstract map interface proven equivalent to the list-based spec via `map_list_agree'`.  The functor supplies OCaml's stdlib `Map` for O(n log n) canonicalization.
+- **Unary nat** is the extraction base type, mapped to OCaml `int` via `ExtrOcamlNatInt`.  Input validation rejects negative values at the system boundary.
 - All proofs use `Defined` rather than `Qed`, making the proof terms transparent and available for further composition.
 
 ## License
