@@ -159,6 +159,10 @@ Inductive event_kind : Type :=
   | Original
   | Correction
   | Cancel.
+(** Cancel is positional: it removes the matching id from the accumulator
+    at the point where it appears in sorted-stream order.  If an Original
+    with the same id follows the Cancel (in sort order), the id reappears
+    in the output.  Cancel is NOT a permanent blacklist. *)
 
 (** * AVL map keyed by nat, used for the map-based accumulator.
     Defined outside the Section because Coq forbids Modules inside Sections. *)
@@ -1761,7 +1765,7 @@ Lemma nat_payload_eqb_spec
 Proof. intros. apply Nat.eqb_spec. Qed.
 
 Definition nat_should_replace (old new_ : event nat nat) : bool :=
-  Nat.leb (ev_seq nat nat old) (ev_seq nat nat new_).
+  Nat.ltb (ev_seq nat nat old) (ev_seq nat nat new_).
 
 Definition nat_cancel_handler (e : event nat nat) (acc : list (event nat nat))
   : list (event nat nat) :=
