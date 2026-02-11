@@ -34,6 +34,7 @@ Require Import Coq.Structures.Orders.
 Require Import Coq.FSets.FMapAVL.
 Require Import Coq.Structures.OrderedTypeEx.
 Require Import Lia.
+Require Import Coq.Lists.SetoidList.
 Import ListNotations.
 
 (** * Lexicographic comparison on nat lists. *)
@@ -1766,6 +1767,259 @@ Definition nat_cancel_handler (e : event nat nat) (acc : list (event nat nat))
   : list (event nat nat) :=
   filter (fun x => negb (Nat.eqb (ev_id nat nat x) (ev_id nat nat e))) acc.
 
+(** * Discharge cancel_handler hypotheses for nat_cancel_handler. *)
+
+Lemma nat_cancel_handler_removes_id
+  : forall e acc, ~ In (ev_id nat nat e) (map (ev_id nat nat) (nat_cancel_handler e acc)).
+Proof.
+  intros e acc. unfold nat_cancel_handler.
+  induction acc as [| h t IH]; simpl.
+  - intro H. exact H.
+  - destruct (negb (Nat.eqb (ev_id nat nat h) (ev_id nat nat e))) eqn:Hf.
+    + simpl. intros [Hx | Hx].
+      * apply negb_true_iff in Hf. apply Nat.eqb_neq in Hf.
+        apply Hf. exact Hx.
+      * exact (IH Hx).
+    + exact IH.
+Qed.
+
+Lemma nat_cancel_handler_preserves_other_id
+  : forall e acc id,
+    ev_id nat nat e <> id ->
+    In id (map (ev_id nat nat) (nat_cancel_handler e acc)) <-> In id (map (ev_id nat nat) acc).
+Proof.
+  intros e acc id Hne. unfold nat_cancel_handler.
+  induction acc as [| h t IH]; simpl.
+  - split; intro H; exact H.
+  - destruct (negb (Nat.eqb (ev_id nat nat h) (ev_id nat nat e))) eqn:Hf.
+    + simpl. split.
+      * intros [Hx | Hx]; [ left; exact Hx | right; apply IH; exact Hx ].
+      * intros [Hx | Hx]; [ left; exact Hx | right; apply IH; exact Hx ].
+    + apply negb_false_iff in Hf. apply Nat.eqb_eq in Hf.
+      split.
+      * intro Hx. right. apply IH. exact Hx.
+      * intros [Hx | Hx].
+        -- exfalso. apply Hne. rewrite <- Hx. symmetry. exact Hf.
+        -- apply IH. exact Hx.
+Qed.
+
+Lemma nat_cancel_handler_no_cancels
+  : forall e acc,
+    (forall x, In x acc -> ev_kind nat nat x <> Cancel) ->
+    (forall x, In x (nat_cancel_handler e acc) -> ev_kind nat nat x <> Cancel).
+Proof.
+  intros e acc Hacc x Hx. unfold nat_cancel_handler in Hx.
+  apply filter_In in Hx. destruct Hx as [Hin _].
+  apply Hacc. exact Hin.
+Qed.
+
+Lemma nat_cancel_handler_NoDup
+  : forall e acc,
+    NoDup (map (ev_id nat nat) acc) ->
+    NoDup (map (ev_id nat nat) (nat_cancel_handler e acc)).
+Proof.
+  intros e acc Hnd. unfold nat_cancel_handler.
+  induction acc as [| h t IH]; simpl.
+  - apply NoDup_nil.
+  - inversion Hnd; subst.
+    destruct (negb (Nat.eqb (ev_id nat nat h) (ev_id nat nat e))) eqn:Hf.
+    + simpl. apply NoDup_cons.
+      * intro Hin. apply H1.
+        clear -Hin. induction t as [| a t' IHt]; simpl in *.
+        -- exact Hin.
+        -- destruct (negb (Nat.eqb (ev_id nat nat a) (ev_id nat nat e))).
+           ++ simpl in Hin. destruct Hin as [Hx | Hx].
+              ** left. exact Hx.
+              ** right. apply IHt. exact Hx.
+           ++ right. apply IHt. exact Hin.
+      * apply IH. exact H2.
+    + apply IH. exact H2.
+Qed.
+
+Lemma nat_cancel_handler_ids_incl
+  : forall e acc,
+    incl (map (ev_id nat nat) (nat_cancel_handler e acc)) (map (ev_id nat nat) acc).
+Proof.
+  intros e acc. unfold nat_cancel_handler.
+  intros x Hx.
+  induction acc as [| h t IH]; simpl in *.
+  - exact Hx.
+  - destruct (negb (Nat.eqb (ev_id nat nat h) (ev_id nat nat e))) eqn:Hf.
+    + simpl in Hx. destruct Hx as [Hx | Hx].
+      * left. exact Hx.
+      * right. apply IH. exact Hx.
+    + right. apply IH. exact Hx.
+Qed.
+
+Lemma nat_cancel_handler_preserves_event
+  : forall e acc x,
+    ev_id nat nat e <> ev_id nat nat x ->
+    In x (nat_cancel_handler e acc) <-> In x acc.
+Proof.
+  intros e acc x Hne. unfold nat_cancel_handler.
+  induction acc as [| h t IH]; simpl.
+  - split; intro H; exact H.
+  - destruct (negb (Nat.eqb (ev_id nat nat h) (ev_id nat nat e))) eqn:Hf.
+    + simpl. split.
+      * intros [Hx | Hx]; [ left; exact Hx | right; apply IH; exact Hx ].
+      * intros [Hx | Hx]; [ left; exact Hx | right; apply IH; exact Hx ].
+    + apply negb_false_iff in Hf. apply Nat.eqb_eq in Hf.
+      split.
+      * intro Hx. right. apply IH. exact Hx.
+      * intros [Hx | Hx].
+        -- exfalso. subst h. apply Hne. symmetry. exact Hf.
+        -- apply IH. exact Hx.
+Qed.
+
+(** * Discharge kmap hypotheses for IdMap (FMapAVL over Nat_as_OT). *)
+
+Definition nat_kmap := IdMap.t (event nat nat).
+Definition nat_kmap_find := @IdMap.find (event nat nat).
+Definition nat_kmap_add := @IdMap.add (event nat nat).
+Definition nat_kmap_remove := @IdMap.remove (event nat nat).
+Definition nat_kmap_In (k : nat) (m : nat_kmap) : Prop := IdMap.In k m.
+Definition nat_kmap_elements := @IdMap.elements (event nat nat).
+Definition nat_kmap_empty := @IdMap.empty (event nat nat).
+
+Lemma nat_kmap_find_In
+  : forall k m v, nat_kmap_find k m = Some v -> nat_kmap_In k m.
+Proof.
+  intros k m v H. unfold nat_kmap_find, nat_kmap_In.
+  exists v. apply IdMap.find_2. exact H.
+Qed.
+
+Lemma nat_kmap_add_In_same
+  : forall k v m, nat_kmap_In k (nat_kmap_add k v m).
+Proof.
+  intros k v m. unfold nat_kmap_In, nat_kmap_add.
+  exists v. apply IdMap.add_1. reflexivity.
+Qed.
+
+Lemma nat_kmap_add_In_other
+  : forall k k' v m, k <> k' -> (nat_kmap_In k' (nat_kmap_add k v m) <-> nat_kmap_In k' m).
+Proof.
+  intros k k' v m Hne. unfold nat_kmap_In, nat_kmap_add. split.
+  - intros [v' Hm]. exists v'.
+    apply IdMap.add_3 with k v; [ | exact Hm ].
+    intro Heq. apply Hne. exact Heq.
+  - intros [v' Hm]. exists v'.
+    apply IdMap.add_2; [ | exact Hm ].
+    intro Heq. apply Hne. exact Heq.
+Qed.
+
+Lemma nat_kmap_remove_not_In
+  : forall k m, ~ nat_kmap_In k (nat_kmap_remove k m).
+Proof.
+  intros k m. unfold nat_kmap_In, nat_kmap_remove.
+  apply IdMap.remove_1. reflexivity.
+Qed.
+
+Lemma nat_kmap_remove_In_other
+  : forall k k' m, k' <> k -> (nat_kmap_In k' (nat_kmap_remove k m) <-> nat_kmap_In k' m).
+Proof.
+  intros k k' m Hne. unfold nat_kmap_In, nat_kmap_remove. split.
+  - intros [v Hm]. exists v.
+    apply IdMap.remove_3 with k. exact Hm.
+  - intros [v Hm]. exists v.
+    apply IdMap.remove_2; [ | exact Hm ].
+    intro Heq. apply Hne. symmetry. exact Heq.
+Qed.
+
+Lemma nat_kmap_find_empty
+  : forall k, nat_kmap_find k nat_kmap_empty = None.
+Proof.
+  intro k. unfold nat_kmap_find, nat_kmap_empty.
+  destruct (IdMap.find k (IdMap.empty (event nat nat))) eqn:Hf.
+  - exfalso. apply IdMap.find_2 in Hf.
+    apply (IdMap.empty_1) in Hf. exact Hf.
+  - reflexivity.
+Qed.
+
+Lemma nat_kmap_find_add_same
+  : forall k v m, nat_kmap_find k (nat_kmap_add k v m) = Some v.
+Proof.
+  intros k v m. unfold nat_kmap_find, nat_kmap_add.
+  apply IdMap.find_1. apply IdMap.add_1. reflexivity.
+Qed.
+
+Lemma nat_kmap_find_add_other
+  : forall k k' v m, k <> k' -> nat_kmap_find k' (nat_kmap_add k v m) = nat_kmap_find k' m.
+Proof.
+  intros k k' v m Hne. unfold nat_kmap_find, nat_kmap_add.
+  destruct (IdMap.find k' m) eqn:Hm.
+  - apply IdMap.find_2 in Hm.
+    apply IdMap.find_1. apply IdMap.add_2.
+    + intro Heq. apply Hne. exact Heq.
+    + exact Hm.
+  - destruct (IdMap.find k' (IdMap.add k v m)) eqn:Ha.
+    + exfalso. apply IdMap.find_2 in Ha.
+      apply IdMap.add_3 in Ha; [ | intro Heq; apply Hne; exact Heq ].
+      rewrite (IdMap.find_1 Ha) in Hm. discriminate.
+    + reflexivity.
+Qed.
+
+Lemma nat_kmap_find_remove_same
+  : forall k m, nat_kmap_find k (nat_kmap_remove k m) = None.
+Proof.
+  intros k m. unfold nat_kmap_find, nat_kmap_remove.
+  destruct (IdMap.find k (IdMap.remove k m)) eqn:Hr.
+  - exfalso. apply IdMap.find_2 in Hr.
+    assert (Hin : IdMap.In k (IdMap.remove k m)) by (exists e; exact Hr).
+    exact (IdMap.remove_1 (eq_refl k) Hin).
+  - reflexivity.
+Qed.
+
+Lemma nat_kmap_find_remove_other
+  : forall k k' m, k' <> k -> nat_kmap_find k' (nat_kmap_remove k m) = nat_kmap_find k' m.
+Proof.
+  intros k k' m Hne. unfold nat_kmap_find, nat_kmap_remove.
+  destruct (IdMap.find k' m) eqn:Hm.
+  - apply IdMap.find_2 in Hm.
+    apply IdMap.find_1. apply IdMap.remove_2.
+    + intro Heq. apply Hne. symmetry. exact Heq.
+    + exact Hm.
+  - destruct (IdMap.find k' (IdMap.remove k m)) eqn:Hr.
+    + exfalso. apply IdMap.find_2 in Hr.
+      apply IdMap.remove_3 in Hr.
+      rewrite (IdMap.find_1 Hr) in Hm. discriminate.
+    + reflexivity.
+Qed.
+
+Lemma nat_kmap_elements_correct
+  : forall k v m,
+    In (k, v) (nat_kmap_elements m) <-> nat_kmap_find k m = Some v.
+Proof.
+  intros k v m. unfold nat_kmap_elements, nat_kmap_find. split.
+  - intro H. apply IdMap.find_1. apply IdMap.elements_2.
+    rewrite InA_alt. exists (k, v). split; [ reflexivity | exact H ].
+  - intro H. apply IdMap.find_2 in H. apply IdMap.elements_1 in H.
+    rewrite InA_alt in H. destruct H as [[k' v'] [Heq Hin]].
+    compute in Heq. destruct Heq as [Hk Hv]. subst k' v'. exact Hin.
+Qed.
+
+Lemma NoDupA_eq_key_NoDup_fst
+  : forall {A : Type} (l : list (nat * A)),
+    NoDupA (@IdMap.eq_key A) l -> NoDup (map fst l).
+Proof.
+  intros A l H. induction H as [| [k v] l Hni Hnd IH]; simpl.
+  - apply NoDup_nil.
+  - apply NoDup_cons.
+    + intro Hin. apply Hni.
+      clear -Hin. induction l as [| [k' v'] t IHl]; simpl in *.
+      * destruct Hin.
+      * destruct Hin as [Hx | Hx].
+        -- left. red. simpl. symmetry. exact Hx.
+        -- right. apply IHl. exact Hx.
+    + exact IH.
+Qed.
+
+Lemma nat_kmap_elements_NoDup
+  : forall m, NoDup (map fst (nat_kmap_elements m)).
+Proof.
+  intro m. unfold nat_kmap_elements.
+  apply NoDupA_eq_key_NoDup_fst. apply IdMap.elements_3w.
+Qed.
+
 (** Convenience aliases for the nat-instantiated definitions. *)
 
 Notation nat_event := (event nat nat).
@@ -2094,7 +2348,7 @@ Require Import Extraction.
 Require Import ExtrOcamlBasic.
 Require Import ExtrOcamlNatInt.
 
-Extraction "D:/eventstream-verified/eventstream.ml"
+Extraction "eventstream.ml"
   canonicalize fold_stream sort_events apply_events process_one
   event_leb event_eqb detect_gaps
   IdMap replace_or_add_map apply_events_map map_values.
