@@ -12,7 +12,7 @@ This library provides a canonicalizer with machine-checked proofs that the outpu
 
 ## Proven properties
 
-All proofs are constructive (`Defined`, not `Qed`) and extract to executable OCaml.
+All core proofs use `Defined` (transparent, extractable). The nat-instantiation hypothesis lemmas use `Qed`.
 
 | Property | Theorem | Meaning |
 |----------|---------|---------|
@@ -101,7 +101,7 @@ make extract
 - **Bottom-up mergesort** is defined directly as fixpoints inside the parameterized Section.  `external_sort_eq` proves that any function producing a sorted permutation equals `sort_events`, justifying the use of OCaml's `List.sort` in the functor.
 - **Map-backed accumulator** (`apply_events_map`) uses an abstract map interface proven equivalent to the list-based spec via `map_list_agree'`.  The functor supplies OCaml's stdlib `Map` for O(n log n) canonicalization.
 - **Unary nat** is the extraction base type, mapped to OCaml `int` via `ExtrOcamlNatInt`.  Input validation rejects negative values at the system boundary.
-- All proofs use `Defined` rather than `Qed`, making the proof terms transparent and available for further composition.
+- All core proofs use `Defined` rather than `Qed`, making the proof terms transparent and available for further composition. The nat-instantiation hypothesis lemmas use `Qed`.
 
 ## License
 
