@@ -158,11 +158,12 @@ let ingest_message engine (msg : string) : unit =
     st.raw <- ev :: st.raw;
     st.msg_count <- st.msg_count + 1
 
-(* Flush: collect hash values and sort.  O(k log k) per symbol. *)
+(* Flush: canonicalize from raw events.  The Hashtbl accumulator gives
+   fast approximate state for real-time queries; flush uses the
+   authoritative batch path (sort-apply-sort) for correctness. *)
 let flush_symbol engine sym : (int, int) event list =
   let st = get_symbol_state engine sym in
-  Hashtbl.fold (fun _ ev acc -> ev :: acc) st.acc []
-  |> ES.sort_events
+  ES.canonicalize st.raw
 
 let flush_all engine : (string * (int, int) event list) list =
   Hashtbl.fold (fun sym _st acc ->
@@ -482,21 +483,3 @@ let run_benchmark n =
 
   Printf.printf "\nDone.\n"
 
-(* ========================================================================= *)
-(* 6. Entry Point                                                            *)
-(* ========================================================================= *)
-
-let () =
-  Random.self_init ();
-  let args = Array.to_list Sys.argv in
-  match args with
-  | _ :: "--demo" :: _ -> run_demo ()
-  | _ :: "--bench" :: n_str :: _ ->
-    (try run_benchmark (int_of_string n_str)
-     with _ -> Printf.eprintf "Usage: fix_engine --bench N\n"; exit 1)
-  | _ :: "--bench" :: [] -> run_benchmark 5000000
-  | _ ->
-    Printf.printf "Usage: fix_engine [--demo | --bench [N]]\n";
-    Printf.printf "  --demo      Run narrated demo with 3 symbols\n";
-    Printf.printf "  --bench N   Benchmark N messages (default 5000000)\n";
-    run_demo ()

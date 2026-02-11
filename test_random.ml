@@ -1,4 +1,5 @@
 open Eventstream
+open Eventstream_functor
 open Int_instance
 
 let canonicalize = ES.canonicalize
@@ -57,8 +58,43 @@ let output_ids_subset input output =
   let input_ids = List.sort_uniq compare (List.map (fun e -> e.ev_id) input) in
   List.for_all (fun e -> List.mem e.ev_id input_ids) output
 
+(* === String-keyed functor instantiation === *)
+
+module StrKey : KEY with type t = string = struct
+  type t = string
+  let compare a b =
+    let c = String.compare a b in
+    if c < 0 then Lt else if c > 0 then Gt else Eq
+  let eqb a b = (a = b)
+end
+
+module StrPayload : PAYLOAD with type t = string = struct
+  type t = string
+  let compare a b =
+    let c = String.compare a b in
+    if c < 0 then Lt else if c > 0 then Gt else Eq
+  let eqb a b = (a = b)
+end
+
+module StrConfig : CONFIG with type key = string and type payload = string = struct
+  type key = string
+  type payload = string
+  type ev = (key, payload) Eventstream.event
+  let should_replace old_ new_ = String.compare old_.ev_seq new_.ev_seq < 0
+  let cancel_handler e acc =
+    List.filter (fun x -> not (x.ev_id = e.ev_id)) acc
+end
+
+module StrES = Make(StrKey)(StrPayload)(StrConfig)
+
+let str_mkEvent id ts seq pl kd =
+  { ev_id = id; ev_timestamp = ts; ev_seq = seq; ev_payload = pl; ev_kind = kd }
+
 let () =
   Random.self_init ();
+
+  (* === Part 1: Int-keyed random stress test === *)
+
   let num_trials = 1000 in
   let max_n = 200 in
   let max_id = 50 in
@@ -135,6 +171,75 @@ let () =
 
   Printf.printf "\n";
   if !failures = 0 then
-    Printf.printf "All %d random trials passed. 8 properties verified per trial.\n" num_trials
+    Printf.printf "All %d int-keyed random trials passed. 8 properties per trial.\n" num_trials
   else
-    Printf.printf "FAILED: %d property violations across %d trials.\n" !failures num_trials
+    Printf.printf "FAILED: %d property violations across %d int-keyed trials.\n" !failures num_trials;
+
+  (* === Part 2: String-keyed functor test === *)
+
+  Printf.printf "\n=== String-Keyed Functor Test (100 trials) ===\n\n";
+
+  let str_failures = ref 0 in
+  let str_trials = 100 in
+
+  let random_str () =
+    let len = 2 + Random.int 6 in
+    String.init len (fun _ -> Char.chr (97 + Random.int 26))
+  in
+
+  for trial = 1 to str_trials do
+    let n = 10 + Random.int 50 in
+    let ids = Array.init 10 (fun _ -> random_str ()) in
+    let stream = List.init n (fun _ ->
+      let id = ids.(Random.int (Array.length ids)) in
+      let ts = random_str () in
+      let seq = string_of_int (Random.int 20) in
+      let pl = random_str () in
+      let kd = random_kind () in
+      str_mkEvent id ts seq pl kd
+    ) in
+
+    let canon = StrES.canonicalize stream in
+
+    (* Idempotence *)
+    let canon2 = StrES.canonicalize canon in
+    if canon <> canon2 then begin
+      Printf.printf "FAIL str trial %d: not idempotent\n" trial;
+      incr str_failures
+    end;
+
+    (* Determinism *)
+    let shuffled = shuffle stream in
+    let canon_s = StrES.canonicalize shuffled in
+    if canon <> canon_s then begin
+      Printf.printf "FAIL str trial %d: not deterministic\n" trial;
+      incr str_failures
+    end;
+
+    (* No cancels *)
+    if not (List.for_all (fun e -> e.ev_kind <> Cancel) canon) then begin
+      Printf.printf "FAIL str trial %d: cancel in output\n" trial;
+      incr str_failures
+    end;
+
+    (* Unique ids *)
+    let ids_out = List.map (fun e -> e.ev_id) canon in
+    let sorted_ids = List.sort String.compare ids_out in
+    let rec dup_check = function
+      | [] | [_] -> false
+      | a :: (b :: _ as rest) -> a = b || dup_check rest
+    in
+    if dup_check sorted_ids then begin
+      Printf.printf "FAIL str trial %d: duplicate ids\n" trial;
+      incr str_failures
+    end;
+
+    if trial mod 25 = 0 then
+      Printf.printf "  ... %d trials done\n" trial
+  done;
+
+  Printf.printf "\n";
+  if !str_failures = 0 then
+    Printf.printf "All %d string-keyed trials passed.\n" str_trials
+  else
+    Printf.printf "FAILED: %d string-keyed violations.\n" !str_failures
