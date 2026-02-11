@@ -8,8 +8,9 @@
 *.crashcoqide
 .lia.cache
 
-# Extracted OCaml — checked in so consumers don't need Coq.
-# Regenerate with: coqc eventstream.v
+# Extracted OCaml — eventstream.ml is checked in so consumers don't need Coq.
+# eventstream.mli is hand-written (public API only); coqc overwrites it,
+# so restore from git after re-extracting: coqc eventstream.v && git checkout eventstream.mli
 
 # OCaml build artifacts
 *.cmo
