@@ -43,7 +43,7 @@ Record event : Type := mkEvent {
 ```
 
 - **Original**: a new event.  Duplicates (same id, same or lower seq) are absorbed.
-- **Correction**: replaces an existing event with the same id if the seq is higher.
+- **Correction**: replaces an existing event with the same id if the seq is **strictly** higher.  Equal-seq corrections are rejected — this is intentional: a retransmitted correction with the same sequence number is treated as a duplicate, not a replacement.
 - **Cancel**: removes all events with the matching id from the output.
 
 Total order is lexicographic over `(timestamp, seq, id, payload, kind)`, making the sort fully deterministic.

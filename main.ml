@@ -207,4 +207,36 @@ let () =
   assert (canon13a = canon13b);
   assert (canon13b = canon13c);
 
-  Printf.printf "All 16 tests passed.\n"
+  (* Test 17: Negative ev_id rejected *)
+  (try
+    let _ = canonicalize [mkEvent (-1) 100 0 42 Original] in
+    Printf.printf "FAIL test 17: negative ev_id not rejected\n";
+    assert false
+  with Invalid_argument _ ->
+    Printf.printf "  PASS test 17: negative ev_id rejected\n");
+
+  (* Test 18: Negative ev_timestamp rejected *)
+  (try
+    let _ = canonicalize [mkEvent 1 (-1) 0 42 Original] in
+    Printf.printf "FAIL test 18: negative ev_timestamp not rejected\n";
+    assert false
+  with Invalid_argument _ ->
+    Printf.printf "  PASS test 18: negative ev_timestamp rejected\n");
+
+  (* Test 19: Negative ev_seq rejected *)
+  (try
+    let _ = canonicalize [mkEvent 1 100 (-1) 42 Original] in
+    Printf.printf "FAIL test 19: negative ev_seq not rejected\n";
+    assert false
+  with Invalid_argument _ ->
+    Printf.printf "  PASS test 19: negative ev_seq rejected\n");
+
+  (* Test 20: Negative ev_payload rejected *)
+  (try
+    let _ = canonicalize [mkEvent 1 100 0 (-1) Original] in
+    Printf.printf "FAIL test 20: negative ev_payload not rejected\n";
+    assert false
+  with Invalid_argument _ ->
+    Printf.printf "  PASS test 20: negative ev_payload rejected\n");
+
+  Printf.printf "All 20 tests passed.\n"

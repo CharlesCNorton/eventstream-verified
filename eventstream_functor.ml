@@ -60,7 +60,6 @@ module Make
   val canonicalize  : ev list -> ev list
   val fold_stream   : ev list -> ev list
   val sort_events   : ev list -> ev list
-  val apply_events  : ev list -> ev list -> ev list
   val process_one   : ev list -> ev -> ev list
   val event_leb     : ev -> ev -> bool
   val event_eqb     : ev -> ev -> bool

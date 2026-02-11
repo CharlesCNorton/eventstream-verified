@@ -107,6 +107,9 @@ type symbol_state = {
   mutable msg_count : int;
 }
 
+type ingest_error =
+  | Parse_failed of string   (* raw wire string *)
+
 type engine = {
   symbols : (string, symbol_state) Hashtbl.t;
   mutable total_messages : int;
@@ -138,10 +141,10 @@ let get_symbol_state engine sym =
    - Original/Correction: replace_or_add keyed by ev_id
    - Cancel: remove by ev_id
    Correctness follows from apply_events_map_spec. *)
-let ingest_message engine (msg : string) : unit =
+let ingest_message engine (msg : string) : (unit, ingest_error) result =
   engine.total_messages <- engine.total_messages + 1;
   match parse_fix_event msg with
-  | None -> ()
+  | None -> Error (Parse_failed msg)
   | Some (sym, ev) ->
     engine.total_parsed <- engine.total_parsed + 1;
     (match ev.ev_kind with
@@ -156,7 +159,8 @@ let ingest_message engine (msg : string) : unit =
         | Some old when not (IntConfig.should_replace old ev) -> ()
         | _ -> Hashtbl.replace st.acc ev.ev_id ev));
     st.raw <- ev :: st.raw;
-    st.msg_count <- st.msg_count + 1
+    st.msg_count <- st.msg_count + 1;
+    Ok ()
 
 (* Flush: canonicalize from raw events.  The Hashtbl accumulator gives
    fast approximate state for real-time queries; flush uses the
@@ -333,7 +337,10 @@ let run_demo () =
   Printf.printf "--- Ingesting %d FIX messages ---\n\n" (List.length demo_messages);
   List.iter (fun msg ->
     Printf.printf "  >> %s\n" msg;
-    ingest_message engine msg
+    match ingest_message engine msg with
+    | Ok () -> ()
+    | Error (Parse_failed raw) ->
+      Printf.printf "  !! PARSE FAILED: %s\n" raw
   ) demo_messages;
 
   Printf.printf "\n--- Canonical state per symbol ---\n";
@@ -425,7 +432,7 @@ let run_benchmark n =
   Printf.printf "Ingesting through verified canonicalization core...\n%!";
 
   let t1 = Sys.time () in
-  Array.iter (ingest_message engine) messages;
+  Array.iter (fun msg -> ignore (ingest_message engine msg)) messages;
   let t_ingest = Sys.time () -. t1 in
 
   Printf.printf "Flushing %d symbols...\n%!"

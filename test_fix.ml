@@ -52,7 +52,7 @@ let () =
 
     (* Streaming path *)
     let engine = create_engine () in
-    Array.iter (ingest_message engine) msgs;
+    Array.iter (fun msg -> ignore (ingest_message engine msg)) msgs;
     let streaming = flush_all engine in
 
     (* Batch path: collect raw events per symbol, canonicalize each *)

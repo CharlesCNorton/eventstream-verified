@@ -575,7 +575,14 @@ Qed.
 (** * Mergesort on events.
     Bottom-up mergesort via a stack of sorted runs, following the
     algorithm of Coq.Sorting.Mergesort.  Defined directly as fixpoints
-    to avoid Module/Section incompatibility. *)
+    to avoid Module/Section incompatibility.
+
+    Termination: all five fixpoints (merge, merge_list_to_stack,
+    merge_stack, iter_merge, sort_events) terminate by structural
+    recursion on their list or option-list arguments.  Coq's guard
+    checker verifies this automatically.  merge uses a nested fixpoint
+    (merge_aux) that recurses structurally on l2 while the outer
+    recursion proceeds on l1. *)
 
 Fixpoint merge (l1 : list event) : list event -> list event :=
   match l1 with
