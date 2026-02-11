@@ -1,8 +1,9 @@
 COQC    ?= coqc
 OCAMLC  ?= ocamlc
 
-EXTRACTED = eventstream.mli eventstream.ml
-COMMON    = $(EXTRACTED) eventstream_functor.ml int_instance.ml
+SRC       = src/eventstream.mli src/eventstream.ml src/eventstream_functor.ml src/int_instance.ml
+OCFLAGS   = -I src -I test
+BUILD     = build
 
 .PHONY: all extract test test-random test-fix fix-engine demo bench clean
 
@@ -10,45 +11,51 @@ all: test test-random test-fix fix-engine
 
 # --- Coq ---
 
-extract: $(EXTRACTED)
+extract: src/eventstream.ml
 
-eventstream.vo $(EXTRACTED): eventstream.v
-	$(COQC) $<
+proof/eventstream.vo src/eventstream.ml: proof/eventstream.v
+	cd proof && $(COQC) eventstream.v
+	git checkout src/eventstream.mli
 
 # --- OCaml ---
 
-test.exe: $(COMMON) main.ml
-	$(OCAMLC) $(COMMON) main.ml -o $@
+$(BUILD):
+	mkdir -p $(BUILD)
 
-test-random.exe: $(COMMON) test_random.ml
-	$(OCAMLC) $(COMMON) test_random.ml -o $@
+$(BUILD)/test.exe: $(SRC) test/main.ml | $(BUILD)
+	$(OCAMLC) $(OCFLAGS) $(SRC) test/main.ml -o $@
 
-test-fix.exe: $(COMMON) fix_engine.ml test_fix.ml
-	$(OCAMLC) $(COMMON) fix_engine.ml test_fix.ml -o $@
+$(BUILD)/test-random.exe: $(SRC) test/test_random.ml | $(BUILD)
+	$(OCAMLC) $(OCFLAGS) $(SRC) test/test_random.ml -o $@
 
-fix-engine.exe: $(COMMON) fix_engine.ml fix_engine_main.ml
-	$(OCAMLC) $(COMMON) fix_engine.ml fix_engine_main.ml -o $@
+$(BUILD)/test-fix.exe: $(SRC) src/fix_engine.ml test/test_fix.ml | $(BUILD)
+	$(OCAMLC) $(OCFLAGS) $(SRC) src/fix_engine.ml test/test_fix.ml -o $@
+
+$(BUILD)/fix-engine.exe: $(SRC) src/fix_engine.ml src/fix_engine_main.ml | $(BUILD)
+	$(OCAMLC) $(OCFLAGS) $(SRC) src/fix_engine.ml src/fix_engine_main.ml -o $@
 
 # --- Run ---
 
-test: test.exe
+test: $(BUILD)/test.exe
 	ocamlrun $<
 
-test-random: test-random.exe
+test-random: $(BUILD)/test-random.exe
 	ocamlrun $<
 
-test-fix: test-fix.exe
+test-fix: $(BUILD)/test-fix.exe
 	ocamlrun $<
 
-fix-engine: fix-engine.exe
+fix-engine: $(BUILD)/fix-engine.exe
 
-demo: fix-engine.exe
+demo: $(BUILD)/fix-engine.exe
 	ocamlrun $< --demo
 
-bench: fix-engine.exe
+bench: $(BUILD)/fix-engine.exe
 	ocamlrun $< --bench
 
 # --- Clean ---
 
 clean:
-	rm -f *.vo *.vos *.vok *.glob .*.aux *.cmo *.cmi *.exe .lia.cache
+	rm -rf $(BUILD)
+	rm -f proof/*.vo proof/*.vos proof/*.vok proof/*.glob proof/.*.aux proof/.lia.cache
+	rm -f src/*.cmo src/*.cmi test/*.cmo test/*.cmi

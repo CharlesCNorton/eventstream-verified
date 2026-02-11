@@ -2602,6 +2602,7 @@ Require Import Extraction.
 Require Import ExtrOcamlBasic.
 Require Import ExtrOcamlNatInt.
 
+Set Extraction Output Directory "../src".
 Extraction "eventstream.ml"
   canonicalize canonicalize_map fold_stream sort_events apply_events process_one
   event_leb event_eqb detect_gaps

@@ -25,6 +25,7 @@
 *.byte
 *.native
 _build/
+build/
 
 # Editor/IDE
 *.swp

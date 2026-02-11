@@ -89,39 +89,11 @@ Each scenario verifies idempotence, determinism, or online-batch equivalence on 
 Requires [Coq Platform](https://github.com/coq/platform) 8.19+ and OCaml 4.14+.
 
 ```bash
-# Compile the formalization (produces .vo and extracts eventstream.ml)
-coqc eventstream.v
-
-# Restore the hand-written .mli (coqc overwrites it)
-git checkout eventstream.mli
-
 # Build and run everything via Makefile
 make all
-```
 
-Or manually:
-
-```bash
-# Unit tests (16 tests)
-ocamlc eventstream.mli eventstream.ml eventstream_functor.ml \
-  int_instance.ml main.ml -o test.exe
-ocamlrun test.exe
-
-# Random stress tests (1000 trials, 8 properties each, int + string keys)
-ocamlc eventstream.mli eventstream.ml eventstream_functor.ml \
-  int_instance.ml test_random.ml -o test_random.exe
-ocamlrun test_random.exe
-
-# FIX round-trip + streaming tests
-ocamlc eventstream.mli eventstream.ml eventstream_functor.ml \
-  int_instance.ml fix_engine.ml test_fix.ml -o test_fix.exe
-ocamlrun test_fix.exe
-
-# FIX engine demo / benchmark
-ocamlc eventstream.mli eventstream.ml eventstream_functor.ml \
-  int_instance.ml fix_engine.ml fix_engine_main.ml -o fix_engine.exe
-ocamlrun fix_engine.exe --demo
-ocamlrun fix_engine.exe --bench 5000000
+# Re-extract from Coq (requires Coq Platform 8.19+)
+make extract
 ```
 
 ## Design notes
