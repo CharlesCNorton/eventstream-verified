@@ -872,6 +872,26 @@ Proof.
   - apply Permutation_sym. apply sort_events_perm.
 Defined.
 
+(** * External sort equivalence.
+    Any function that produces a sorted permutation of its input
+    must agree with sort_events.  This justifies replacing the
+    extracted sort with OCaml's List.sort in the functor. *)
+
+Theorem external_sort_eq
+  : forall (f : list event -> list event),
+    (forall l, Permutation l (f l)) ->
+    (forall l, Sorted_leb (f l)) ->
+    forall l, f l = sort_events l.
+Proof.
+  intros f Hperm Hsorted l.
+  apply sort_unique.
+  - exact (Hsorted l).
+  - apply sort_events_sorted.
+  - apply Permutation_trans with l.
+    + apply Permutation_sym. exact (Hperm l).
+    + apply sort_events_perm.
+Defined.
+
 (** * Determinism: canonicalize is permutation-invariant. *)
 
 Lemma sort_events_deterministic

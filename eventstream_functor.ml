@@ -70,8 +70,8 @@ end = struct
   end)
 
   (* O(n log n) sort via OCaml's List.sort (stable mergesort).
-     Semantically identical to the extracted insertion sort by
-     sort_unique: any sorted permutation under a total order is unique. *)
+     Equals the extracted sort_events by external_sort_eq: any
+     function producing a sorted permutation is unique. *)
   let event_cmp (e1 : ev) (e2 : ev) : int =
     match Eventstream.event_compare K.compare P.compare e1 e2 with
     | Eq -> 0 | Lt -> -1 | Gt -> 1
