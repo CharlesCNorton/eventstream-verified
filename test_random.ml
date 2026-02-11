@@ -65,6 +65,7 @@ module StrKey : KEY with type t = string = struct
   let compare a b =
     let c = String.compare a b in
     if c < 0 then Lt else if c > 0 then Gt else Eq
+  let ord_compare = String.compare
   let eqb a b = (a = b)
 end
 

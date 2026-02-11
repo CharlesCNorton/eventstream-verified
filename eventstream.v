@@ -1941,6 +1941,13 @@ Definition detect_gaps (stream : list event) : list Key :=
   let output_ids := ids_of (canonicalize stream) in
   filter (fun id => negb (mem_key id output_ids)) input_ids.
 
+(** * Map-backed canonicalize.
+    Uses the O(n log n) AVL accumulator instead of the O(n^2) list.
+    Proven equivalent to list-based canonicalize via map_list_agree'. *)
+
+Definition canonicalize_map (stream : list event) : list event :=
+  sort_events (map_values (apply_events_map (sort_events stream) kmap_empty)).
+
 End Parameterized.
 
 (** * Nat-payload instantiation for worked examples and extraction. *)
@@ -2569,6 +2576,6 @@ Require Import ExtrOcamlBasic.
 Require Import ExtrOcamlNatInt.
 
 Extraction "eventstream.ml"
-  canonicalize fold_stream sort_events apply_events process_one
+  canonicalize canonicalize_map fold_stream sort_events apply_events process_one
   event_leb event_eqb detect_gaps
   IdMap replace_or_add_map apply_events_map map_values.

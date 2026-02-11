@@ -13,8 +13,9 @@ open Eventstream
 (** Key type: used for ev_id, ev_timestamp, ev_seq. *)
 module type KEY = sig
   type t
-  val compare : t -> t -> Eventstream.comparison
-  val eqb     : t -> t -> bool
+  val compare     : t -> t -> Eventstream.comparison
+  val ord_compare : t -> t -> int   (** Stdlib ordering for Map.Make *)
+  val eqb        : t -> t -> bool
 end
 
 (** Payload type: carried data inside each event. *)
@@ -63,6 +64,11 @@ end = struct
   type payload = P.t
   type ev      = (key, payload) Eventstream.event
 
+  module KM = Map.Make(struct
+    type t = K.t
+    let compare = K.ord_compare
+  end)
+
   (* O(n log n) sort via OCaml's List.sort (stable mergesort).
      Semantically identical to the extracted insertion sort by
      sort_unique: any sorted permutation under a total order is unique. *)
@@ -76,8 +82,14 @@ end = struct
     Eventstream.apply_events K.eqb C.should_replace C.cancel_handler
       sorted acc
 
+  (* Map-backed canonicalize: O(n log n) accumulator via stdlib Map.
+     Uses the extracted apply_events_map, which is proven equivalent
+     to the list-based apply_events via map_list_agree'. *)
   let canonicalize stream =
-    sort_events (apply_events (sort_events stream) [])
+    let sorted = sort_events stream in
+    let m = Eventstream.apply_events_map
+      C.should_replace KM.find_opt KM.add KM.remove sorted KM.empty in
+    sort_events (List.map snd (KM.bindings m))
 
   let fold_stream stream =
     sort_events

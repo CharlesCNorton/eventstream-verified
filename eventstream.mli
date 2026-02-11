@@ -2980,3 +2980,10 @@ val detect_gaps :
   comparison) -> (('a1, 'a2) event -> ('a1, 'a2) event -> bool) -> (('a1,
   'a2) event -> ('a1, 'a2) event list -> ('a1, 'a2) event list) -> ('a1, 'a2)
   event list -> 'a1 list
+
+val canonicalize_map :
+  ('a1 -> 'a1 -> comparison) -> ('a2 -> 'a2 -> comparison) -> (('a1, 'a2)
+  event -> ('a1, 'a2) event -> bool) -> ('a1 -> 'a3 -> ('a1, 'a2) event
+  option) -> ('a1 -> ('a1, 'a2) event -> 'a3 -> 'a3) -> ('a1 -> 'a3 -> 'a3)
+  -> ('a3 -> ('a1 * ('a1, 'a2) event) list) -> 'a3 -> ('a1, 'a2) event list
+  -> ('a1, 'a2) event list

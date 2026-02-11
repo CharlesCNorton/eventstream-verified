@@ -4,6 +4,7 @@ open Eventstream_functor
 module IntKey : KEY with type t = int = struct
   type t = int
   let compare a b = Nat.compare a b
+  let ord_compare (a : int) (b : int) = Stdlib.compare a b
   let eqb a b = (a = b)
 end
 

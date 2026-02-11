@@ -2018,3 +2018,16 @@ let detect_gaps key_compare key_eqb payload_compare should_replace cancel_handle
         cancel_handler stream)
   in
   filter (fun id -> negb (mem_key key_eqb id output_ids)) input_ids
+
+(** val canonicalize_map :
+    ('a1 -> 'a1 -> comparison) -> ('a2 -> 'a2 -> comparison) -> (('a1, 'a2)
+    event -> ('a1, 'a2) event -> bool) -> ('a1 -> 'a3 -> ('a1, 'a2) event
+    option) -> ('a1 -> ('a1, 'a2) event -> 'a3 -> 'a3) -> ('a1 -> 'a3 -> 'a3)
+    -> ('a3 -> ('a1 * ('a1, 'a2) event) list) -> 'a3 -> ('a1, 'a2) event list
+    -> ('a1, 'a2) event list **)
+
+let canonicalize_map key_compare payload_compare should_replace kmap_find kmap_add kmap_remove kmap_elements kmap_empty stream =
+  sort_events key_compare payload_compare
+    (map_values kmap_elements
+      (apply_events_map should_replace kmap_find kmap_add kmap_remove
+        (sort_events key_compare payload_compare stream) kmap_empty))
