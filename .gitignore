@@ -36,6 +36,15 @@ build/
 *.merlin
 .coq-native/
 
+# Test/bench output
+*_output.txt
+*_error.txt
+output.txt
+error.txt
+
+# Windows artifacts
+nul
+
 # OS
 Thumbs.db
 Desktop.ini

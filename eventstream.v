@@ -10,9 +10,9 @@
 (*     construction; chunked replay is compositional over append.             *)
 (*     Replay-safe ingestion layer for bit-for-bit reproducible pipelines.    *)
 (*                                                                            *)
-(*     "No man ever steps in the same river twice, for it is not the          *)
-(*     same river and he is not the same man."                                *)
-(*     — Heraclitus, c. 500 BC                                               *)
+(*     No man ever steps in the same river twice, for it is not the           *)
+(*     same river and he is not the same man.                                 *)
+(*                                          -- Heraclitus, c. 500 BC         *)
 (*                                                                            *)
 (*     Author: Charles C. Norton                                              *)
 (*     Date: February 10, 2026                                                *)
@@ -36,122 +36,6 @@ Require Import Coq.Structures.OrderedTypeEx.
 Require Import Lia.
 Require Import Coq.Lists.SetoidList.
 Import ListNotations.
-
-(** * Lexicographic comparison on nat lists. *)
-
-Fixpoint lex_compare (l1 l2 : list nat) : comparison :=
-  match l1, l2 with
-  | [], [] => Eq
-  | [], _ :: _ => Lt
-  | _ :: _, [] => Gt
-  | k1 :: rest1, k2 :: rest2 =>
-    match Nat.compare k1 k2 with
-    | Lt => Lt
-    | Gt => Gt
-    | Eq => lex_compare rest1 rest2
-    end
-  end.
-
-Definition lex_leb (l1 l2 : list nat) : bool :=
-  match lex_compare l1 l2 with
-  | Gt => false
-  | _ => true
-  end.
-
-Lemma lex_compare_refl
-  : forall l, lex_compare l l = Eq.
-Proof.
-  induction l as [| k l' IH]; simpl.
-  - reflexivity.
-  - rewrite Nat.compare_refl. exact IH.
-Qed.
-
-Lemma lex_compare_antisym
-  : forall l1 l2, lex_compare l1 l2 = CompOpp (lex_compare l2 l1).
-Proof.
-  induction l1 as [| a l1' IH]; intros [| b l2']; simpl; try reflexivity.
-  rewrite Nat.compare_antisym.
-  destruct (Nat.compare b a) eqn:Hba; simpl; try reflexivity.
-  apply IH.
-Qed.
-
-Lemma lex_compare_eq
-  : forall l1 l2, lex_compare l1 l2 = Eq -> l1 = l2.
-Proof.
-  induction l1 as [| a l1' IH]; intros [| b l2']; simpl; intro H;
-    try reflexivity; try discriminate.
-  destruct (Nat.compare a b) eqn:Hab; try discriminate.
-  apply Nat.compare_eq_iff in Hab. subst b.
-  f_equal. apply IH. exact H.
-Qed.
-
-Lemma lex_leb_refl
-  : forall l, lex_leb l l = true.
-Proof.
-  intro l. unfold lex_leb. rewrite lex_compare_refl. reflexivity.
-Qed.
-
-Lemma lex_leb_total
-  : forall l1 l2, lex_leb l1 l2 = true \/ lex_leb l2 l1 = true.
-Proof.
-  intros l1 l2. unfold lex_leb.
-  rewrite lex_compare_antisym.
-  destruct (lex_compare l2 l1); simpl; auto.
-Qed.
-
-Lemma lex_leb_antisym
-  : forall l1 l2, lex_leb l1 l2 = true -> lex_leb l2 l1 = true -> l1 = l2.
-Proof.
-  intros l1 l2 H1 H2. unfold lex_leb in *.
-  apply lex_compare_eq.
-  destruct (lex_compare l1 l2) eqn:H12; try reflexivity; try discriminate.
-  (* Lt case: lex_compare l2 l1 must be Gt by antisymmetry *)
-  rewrite lex_compare_antisym, H12 in H2. simpl in H2. discriminate.
-Qed.
-
-Lemma lex_compare_not_gt_trans
-  : forall l1 l2 l3,
-    lex_compare l1 l2 <> Gt ->
-    lex_compare l2 l3 <> Gt ->
-    lex_compare l1 l3 <> Gt.
-Proof.
-  induction l1 as [| a l1' IH].
-  - intros l2 l3 H12 H23. destruct l2; destruct l3; simpl; discriminate.
-  - intros [| b l2'] [| c l3']; simpl; intros H12 H23.
-    + exact H12.
-    + exfalso. apply H12. reflexivity.
-    + exfalso. apply H23. reflexivity.
-    + destruct (Nat.compare a b) eqn:Hab.
-      * apply Nat.compare_eq_iff in Hab. subst b.
-        destruct (Nat.compare a c) eqn:Hac.
-        -- apply Nat.compare_eq_iff in Hac. subst c.
-           exact (IH _ _ H12 H23).
-        -- intro; discriminate.
-        -- exfalso. apply H23. reflexivity.
-      * (* a < b, need a <= c *)
-        apply Nat.compare_lt_iff in Hab.
-        intro H13.
-        assert (Hbc : b <= c).
-        { destruct (Nat.compare_spec b c) as [Heq | Hlt | Hgt].
-          - lia. - lia.
-          - exfalso. exact (H23 eq_refl). }
-        assert (Hac : (a ?= c) = Lt) by (apply Nat.compare_lt_iff; lia).
-        rewrite Hac in H13. discriminate.
-      * exfalso. apply H12. reflexivity.
-Qed.
-
-Lemma lex_leb_trans
-  : forall l1 l2 l3,
-    lex_leb l1 l2 = true -> lex_leb l2 l3 = true -> lex_leb l1 l3 = true.
-Proof.
-  intros l1 l2 l3 H1 H2. unfold lex_leb in *.
-  destruct (lex_compare l1 l3) eqn:H13; try reflexivity.
-  exfalso.
-  apply (lex_compare_not_gt_trans l1 l2 l3).
-  - destruct (lex_compare l1 l2); discriminate.
-  - destruct (lex_compare l2 l3); discriminate.
-  - exact H13.
-Qed.
 
 (** * Core types. *)
 
