@@ -25,7 +25,7 @@ module type PAYLOAD = sig
   val eqb     : t -> t -> bool
 end
 
-(** Conflict resolution and cancel semantics. *)
+(** Conflict resolution, cancel semantics, and input validation. *)
 module type CONFIG = sig
   type key
   type payload
@@ -36,6 +36,13 @@ module type CONFIG = sig
 
   (** [cancel_handler cancel_ev acc] removes the cancelled event. *)
   val cancel_handler : ev -> ev list -> ev list
+
+  (** [validate ev] raises [Invalid_argument] if any field is out of
+      range for the concrete key/payload representation.  Called on
+      every event entering [canonicalize], [fold_stream], and
+      [process_one].  ExtrOcamlNatInt maps Coq nat to OCaml int;
+      this hook rejects values that would silently overflow. *)
+  val validate : ev -> unit
 end
 
 (** The functor.  Instantiate with concrete Key, Payload, and Config
@@ -82,22 +89,27 @@ end = struct
     Eventstream.apply_events K.eqb C.should_replace C.cancel_handler
       sorted acc
 
+  let validate_all stream = List.iter C.validate stream
+
   (* Map-backed canonicalize: O(n log n) accumulator via stdlib Map.
      Uses the extracted apply_events_map, which is proven equivalent
      to the list-based apply_events via map_list_agree'. *)
   let canonicalize stream =
+    validate_all stream;
     let sorted = sort_events stream in
     let m = Eventstream.apply_events_map
       C.should_replace KM.find_opt KM.add KM.remove sorted KM.empty in
     sort_events (List.map snd (KM.bindings m))
 
   let fold_stream stream =
+    validate_all stream;
     sort_events
       (List.fold_left
         (Eventstream.process_one K.eqb C.should_replace C.cancel_handler)
         [] (sort_events stream))
 
   let process_one acc e =
+    C.validate e;
     Eventstream.process_one K.eqb C.should_replace C.cancel_handler
       acc e
 

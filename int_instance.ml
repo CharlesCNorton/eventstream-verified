@@ -21,6 +21,15 @@ module IntConfig : CONFIG with type key = int and type payload = int = struct
   let should_replace old_ new_ = (<) old_.ev_seq new_.ev_seq
   let cancel_handler e acc =
     List.filter (fun x -> not (x.ev_id = e.ev_id)) acc
+  let validate (e : ev) =
+    let check name v =
+      if v < 0 then
+        invalid_arg (Printf.sprintf "eventstream: %s is negative (%d)" name v)
+    in
+    check "ev_id" e.ev_id;
+    check "ev_timestamp" e.ev_timestamp;
+    check "ev_seq" e.ev_seq;
+    check "ev_payload" e.ev_payload
 end
 
 module ES = Make(IntKey)(IntPayload)(IntConfig)

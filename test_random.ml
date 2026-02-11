@@ -84,6 +84,7 @@ module StrConfig : CONFIG with type key = string and type payload = string = str
   let should_replace old_ new_ = String.compare old_.ev_seq new_.ev_seq < 0
   let cancel_handler e acc =
     List.filter (fun x -> not (x.ev_id = e.ev_id)) acc
+  let validate _ = ()
 end
 
 module StrES = Make(StrKey)(StrPayload)(StrConfig)
