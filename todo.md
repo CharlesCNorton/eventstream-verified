@@ -2,4 +2,34 @@
 
 - [x] #1 Replace insertion sort with bottom-up mergesort (O(n log n)). Defined merge/stack as direct fixpoints inside Section; reproved sort_events_perm and sort_events_sorted via merge_perm, merge_sorted, and stack invariants.
 - [ ] #2 Prove map-batch equivalence: sort_events (map_values (apply_events_map stream empty)) = canonicalize stream. Route canonicalize through map path or export both with equivalence proof as bridge.
-- [ ] #7 Update extraction to emit Mergesort/map-backed canonicalize (blocked by #1, #2)
+- [ ] #3 Prove cancel_handler_removes_id for nat_cancel_handler.
+- [ ] #4 Prove cancel_handler_preserves_other_id for nat_cancel_handler.
+- [ ] #5 Prove cancel_handler_no_cancels for nat_cancel_handler.
+- [ ] #6 Prove cancel_handler_NoDup for nat_cancel_handler.
+- [ ] #7 Prove cancel_handler_ids_incl for nat_cancel_handler.
+- [ ] #8 Prove cancel_handler_preserves_event for nat_cancel_handler.
+- [ ] #9 Prove kmap_find_In for IdMap.
+- [ ] #10 Prove kmap_add_In_same for IdMap.
+- [ ] #11 Prove kmap_add_In_other for IdMap.
+- [ ] #12 Prove kmap_remove_not_In for IdMap.
+- [ ] #13 Prove kmap_remove_In_other for IdMap.
+- [ ] #14 Prove kmap_find_empty for IdMap.
+- [ ] #15 Prove kmap_find_add_same for IdMap.
+- [ ] #16 Prove kmap_find_add_other for IdMap.
+- [ ] #17 Prove kmap_find_remove_same for IdMap.
+- [ ] #18 Prove kmap_find_remove_other for IdMap.
+- [ ] #19 Prove kmap_elements_correct for IdMap.
+- [ ] #20 Prove kmap_elements_NoDup for IdMap.
+- [ ] #21 Define kmap_In concretely for IdMap.
+- [ ] #22 Update extraction to emit Mergesort/map-backed canonicalize (blocked by #2, #9-#21).
+- [ ] #23 Change extraction path from D:/eventstream-verified/eventstream.ml to relative.
+- [ ] #24 Extract IntKey, IntPayload, IntConfig into a shared module; delete the three copies.
+- [ ] #25 Add Makefile or dune build that chains coqc extraction into OCaml compile.
+- [ ] #26 Check in generated eventstream.mli or make the build produce it automatically.
+- [ ] #27 Add test: ingest N random FIX messages through streaming engine, flush, assert equality with batch ES.canonicalize.
+- [ ] #28 Add test: parse_fix_event (event_to_fix e) = Some e round-trip.
+- [ ] #29 Prove in Coq that OCaml List.sort under extracted comparison equals extracted sort_events, or revert to using extracted sort.
+- [ ] #30 Replace ExtrOcamlNatInt with Zarith extraction, or add input validation rejecting values exceeding 62 bits.
+- [ ] #31 Change nat_should_replace from Nat.leb to Nat.ltb so same-seq retransmits are absorbed.
+- [ ] #32 Document that Cancel is positional in sorted-stream order, not a permanent ID blacklist.
+- [ ] #33 Expand random test parameters and add at least one non-int functor instantiation test.
