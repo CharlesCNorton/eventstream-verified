@@ -1274,6 +1274,222 @@ Proof.
       * apply IH. exact H2.
 Defined.
 
+(** * Map-list agreement: replace_or_add / replace_or_add_map. *)
+
+Lemma replace_or_add_spec
+  : forall e acc,
+    NoDup (map ev_id acc) ->
+    forall x, In x (replace_or_add e acc) -> ev_id x = ev_id e ->
+    (exists old, In old acc /\ ev_id old = ev_id e /\
+      ((should_replace old e = true /\ x = e) \/
+       (should_replace old e = false /\ x = old))) \/
+    (~ In (ev_id e) (map ev_id acc) /\ x = e).
+Proof.
+  intros e acc Hnd.
+  induction acc as [| h t IH]; simpl; intros x Hin Hid.
+  - destruct Hin as [<- | []]. right. split; [intro H; exact H | reflexivity].
+  - destruct (key_eqb (ev_id h) (ev_id e)) eqn:Heq.
+    + apply key_eqb_eq in Heq.
+      destruct (should_replace h e) eqn:Hsr; simpl in Hin.
+      * destruct Hin as [<- | Hin].
+        -- left. exists h. split; [left; reflexivity |].
+           split; [exact Heq | left; split; [exact Hsr | reflexivity]].
+        -- exfalso. inversion Hnd; subst.
+           apply H1. rewrite Heq. rewrite <- Hid. apply in_map. exact Hin.
+      * destruct Hin as [<- | Hin].
+        -- left. exists h. split; [left; reflexivity |].
+           split; [exact Heq | right; split; [exact Hsr | reflexivity]].
+        -- exfalso. inversion Hnd; subst.
+           apply H1. rewrite Heq. rewrite <- Hid. apply in_map. exact Hin.
+    + simpl in Hin. destruct Hin as [<- | Hin].
+      * exfalso. apply key_eqb_neq in Heq. apply Heq. exact Hid.
+      * inversion Hnd; subst.
+        destruct (IH H2 x Hin Hid) as [[old [Hold [Hoid Hcase]]] | [Hni Hxe]].
+        -- left. exists old. split; [right; exact Hold | exact (conj Hoid Hcase)].
+        -- right. split.
+           ++ intro Hin2. simpl in Hin2. destruct Hin2 as [Hh | Ht].
+              ** apply key_eqb_neq in Heq. apply Heq. exact Hh.
+              ** exact (Hni Ht).
+           ++ exact Hxe.
+Defined.
+
+Lemma replace_or_add_has_event
+  : forall e acc,
+    NoDup (map ev_id acc) ->
+    (forall old, In old acc -> ev_id old = ev_id e -> should_replace old e = true) ->
+    In e (replace_or_add e acc).
+Proof.
+  intros e acc Hnd Hall.
+  induction acc as [| h t IH]; simpl.
+  - left. reflexivity.
+  - destruct (key_eqb (ev_id h) (ev_id e)) eqn:Heq.
+    + apply key_eqb_eq in Heq.
+      rewrite (Hall h (or_introl eq_refl) Heq). left. reflexivity.
+    + right. inversion Hnd; subst. apply IH.
+      * exact H2.
+      * intros old Hin Hid. apply Hall. right. exact Hin. exact Hid.
+Defined.
+
+Lemma replace_or_add_keeps_loser
+  : forall e acc old,
+    NoDup (map ev_id acc) ->
+    In old acc -> ev_id old = ev_id e -> should_replace old e = false ->
+    In old (replace_or_add e acc).
+Proof.
+  intros e acc old Hnd Hin Hid Hsr.
+  induction acc as [| h t IH]; simpl.
+  - destruct Hin.
+  - destruct (key_eqb (ev_id h) (ev_id e)) eqn:Heq.
+    + apply key_eqb_eq in Heq.
+      destruct Hin as [<- | Hin].
+      * rewrite Hsr. left. reflexivity.
+      * exfalso. inversion Hnd; subst.
+        apply H1. rewrite Heq. rewrite <- Hid. apply in_map. exact Hin.
+    + destruct Hin as [<- | Hin].
+      * exfalso. apply key_eqb_neq in Heq. apply Heq. exact Hid.
+      * right. inversion Hnd; subst. apply IH; assumption.
+Defined.
+
+Lemma NoDup_In_unique
+  : forall acc e1 e2,
+    NoDup (map ev_id acc) ->
+    In e1 acc -> In e2 acc ->
+    ev_id e1 = ev_id e2 -> e1 = e2.
+Proof.
+  induction acc as [| h t IH]; intros e1 e2 Hnd H1 H2 Hid.
+  - destruct H1.
+  - inversion Hnd; subst.
+    destruct H1 as [<- | H1]; destruct H2 as [<- | H2].
+    + reflexivity.
+    + exfalso. apply H3. rewrite Hid. apply in_map. exact H2.
+    + exfalso. apply H3. rewrite <- Hid. apply in_map. exact H1.
+    + exact (IH e1 e2 H4 H1 H2 Hid).
+Defined.
+
+Definition map_list_agree' (acc : list event) (m : KMap) : Prop :=
+  NoDup (map ev_id acc) /\
+  (forall e, In e acc -> kmap_find (ev_id e) m = Some e) /\
+  (forall id e, kmap_find id m = Some e -> In e acc /\ ev_id e = id).
+
+Lemma map_list_agree'_empty
+  : map_list_agree' [] kmap_empty.
+Proof.
+  split; [| split].
+  - apply NoDup_nil.
+  - intros e [].
+  - intros id e H. rewrite kmap_find_empty in H. discriminate.
+Defined.
+
+Lemma map_list_agree'_replace_or_add
+  : forall e acc m,
+    map_list_agree' acc m ->
+    map_list_agree' (replace_or_add e acc) (replace_or_add_map e m).
+Proof.
+  intros e acc m [Hnd [Hfwd Hbwd]].
+  split; [| split].
+  - apply NoDup_replace_or_add. exact Hnd.
+  - intros x Hin.
+    destruct (key_eqb (ev_id x) (ev_id e)) eqn:Heq.
+    + apply key_eqb_eq in Heq.
+      rewrite Heq. rewrite kmap_find_replace_or_add_map_same.
+      destruct (replace_or_add_spec e acc Hnd x Hin Heq)
+        as [[old [Hold [Hoid [[Hsr Hxe] | [Hsr Hxo]]]]] | [Hni Hxe]].
+      * subst x. rewrite <- Hoid. rewrite (Hfwd old Hold). rewrite Hsr. reflexivity.
+      * subst x. rewrite <- Hoid. rewrite (Hfwd old Hold). rewrite Hsr. reflexivity.
+      * subst x.
+        destruct (kmap_find (ev_id e) m) as [old |] eqn:Hfold.
+        -- exfalso. apply Hni.
+           destruct (Hbwd _ _ Hfold) as [Hin2 Hid2].
+           rewrite <- Hid2. apply in_map. exact Hin2.
+        -- reflexivity.
+    + apply key_eqb_neq in Heq.
+      rewrite kmap_find_replace_or_add_map_other by (intro Hc; apply Heq; symmetry; exact Hc).
+      apply Hfwd.
+      apply (replace_or_add_preserves_other e acc x (fun H => Heq (eq_sym H))). exact Hin.
+  - intros id x Hf.
+    destruct (key_eqb id (ev_id e)) eqn:Heq.
+    + apply key_eqb_eq in Heq. subst id.
+      rewrite kmap_find_replace_or_add_map_same in Hf.
+      destruct (kmap_find (ev_id e) m) as [old |] eqn:Hfold.
+      * destruct (Hbwd _ _ Hfold) as [Hold Hoid].
+        destruct (should_replace old e) eqn:Hsr.
+        -- injection Hf; intro; subst x.
+           split; [| reflexivity].
+           apply replace_or_add_has_event.
+           ++ exact Hnd.
+           ++ intros old2 Hold2 Hid2.
+              assert (old2 = old) by (apply NoDup_In_unique with acc; [exact Hnd | exact Hold2 | exact Hold | rewrite Hid2; symmetry; exact Hoid]).
+              subst old2. exact Hsr.
+        -- injection Hf; intro; subst x.
+           split; [| exact Hoid].
+           apply replace_or_add_keeps_loser; [exact Hnd | exact Hold | exact Hoid | exact Hsr].
+      * injection Hf; intro; subst x.
+        split; [| reflexivity].
+        apply replace_or_add_has_event.
+        ++ exact Hnd.
+        ++ intros old Hold Hid.
+           exfalso. apply Hfwd in Hold. rewrite Hid in Hold.
+           rewrite Hfold in Hold. discriminate.
+    + apply key_eqb_neq in Heq.
+      rewrite kmap_find_replace_or_add_map_other in Hf by (intro Hc; apply Heq; symmetry; exact Hc).
+      destruct (Hbwd _ _ Hf) as [Hin Hid].
+      split; [| exact Hid].
+      apply replace_or_add_preserves_other.
+      * rewrite Hid. intro Hc. apply Heq. symmetry. exact Hc.
+      * exact Hin.
+Defined.
+
+Lemma map_list_agree'_cancel
+  : forall e acc m,
+    map_list_agree' acc m ->
+    map_list_agree' (cancel_handler e acc) (kmap_remove (ev_id e) m).
+Proof.
+  intros e acc m [Hnd [Hfwd Hbwd]].
+  split; [| split].
+  - apply cancel_handler_NoDup. exact Hnd.
+  - intros x Hin.
+    assert (Hne : ev_id e <> ev_id x).
+    { intro Heq.
+      apply (cancel_handler_removes_id e acc).
+      rewrite Heq. apply in_map. exact Hin. }
+    rewrite kmap_find_remove_other by (intro Hc; apply Hne; symmetry; exact Hc).
+    apply Hfwd.
+    apply (cancel_handler_preserves_event e acc x Hne). exact Hin.
+  - intros id x Hf.
+    destruct (key_eqb id (ev_id e)) eqn:Heq.
+    + apply key_eqb_eq in Heq. subst id.
+      rewrite kmap_find_remove_same in Hf. discriminate.
+    + apply key_eqb_neq in Heq.
+      rewrite kmap_find_remove_other in Hf by (intro Hc; apply Heq; exact Hc).
+      destruct (Hbwd _ _ Hf) as [Hin Hid].
+      split; [| exact Hid].
+      apply cancel_handler_preserves_event.
+      * intro Hc. rewrite Hid in Hc. apply Heq. symmetry. exact Hc.
+      * exact Hin.
+Defined.
+
+Theorem map_list_agree'_apply_events
+  : forall stream acc m,
+    map_list_agree' acc m ->
+    map_list_agree' (apply_events stream acc) (apply_events_map stream m).
+Proof.
+  induction stream as [| e rest IH]; simpl; intros acc m Hagr.
+  - exact Hagr.
+  - destruct (ev_kind e) eqn:Hk.
+    + apply IH. apply map_list_agree'_replace_or_add. exact Hagr.
+    + apply IH. apply map_list_agree'_replace_or_add. exact Hagr.
+    + apply IH. apply map_list_agree'_cancel. exact Hagr.
+Defined.
+
+Theorem apply_events_map_equiv
+  : forall stream,
+    map_list_agree' (apply_events stream []) (apply_events_map stream kmap_empty).
+Proof.
+  intro stream.
+  apply map_list_agree'_apply_events.
+  apply map_list_agree'_empty.
+Defined.
+
 Lemma NoDup_filter
   : forall {A} (f : A -> bool) l, NoDup l -> NoDup (filter f l).
 Proof.
